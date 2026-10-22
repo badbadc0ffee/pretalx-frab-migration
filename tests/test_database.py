@@ -168,10 +168,13 @@ def test_invalid_parent_stops_the_read(migration_database, parent_id, message):
 
 
 @pytest.mark.parametrize("backend", ("mysql", "postgresql"))
-def test_server_selected_conference_uses_bound_parameters(monkeypatch, backend):
+def test_server_selected_conference_and_tracks_use_bound_parameters(
+    monkeypatch, backend
+):
     driver = pymysql if backend == "mysql" else psycopg
     connection = Mock()
     cursor = connection.cursor.return_value
+    cursor.fetchall.return_value = [(17, "Example track", "fefd7f")]
     cursor.fetchone.side_effect = [
         (
             42,
@@ -191,12 +194,19 @@ def test_server_selected_conference_uses_bound_parameters(monkeypatch, backend):
     ]
     monkeypatch.setattr(driver, "connect", Mock(return_value=connection))
     row = database.fetch_conference(42, backend=backend, name="frab")
-    query, parameters = cursor.execute.call_args_list[-2].args
+    query, parameters = cursor.execute.call_args_list[-3].args
     assert query.endswith("WHERE id = %s")
     assert parameters == (42,)
     assert "feedback_token" not in query
     assert "schedule_public" not in query
     assert row["id"] == 42
+    query, parameters = cursor.execute.call_args.args
+    assert (
+        query
+        == "SELECT id, name, color FROM tracks WHERE conference_id = %s ORDER BY name, id"
+    )
+    assert parameters == (42,)
+    assert row["tracks"] == [{"id": 17, "name": "Example track", "color": "fefd7f"}]
     cursor.close.assert_called_once()
     connection.close.assert_called_once()
 
@@ -213,6 +223,7 @@ def test_server_cfp_lookup_uses_bound_parameters(monkeypatch, backend):
     driver = pymysql if backend == "mysql" else psycopg
     connection = Mock()
     cursor = connection.cursor.return_value
+    cursor.fetchall.return_value = [(17, "Example track", "fefd7f")]
     cursor.fetchone.side_effect = [
         (42, "Title", "CONF", "UTC", None, None, None, None, 0, None, None, None),
         ("2020-01-01", "2020-02-01", None, "Welcome", "cfp@example.org"),
@@ -224,7 +235,7 @@ def test_server_cfp_lookup_uses_bound_parameters(monkeypatch, backend):
     assert row["email"] == "cfp@example.org"
     assert row["cfp"]["welcome_text"] == "Welcome"
     assert row["cfp"]["start_date"] == "2020-01-01"
-    query, parameters = cursor.execute.call_args.args
+    query, parameters = cursor.execute.call_args_list[-2].args
     assert query == (
         "SELECT start_date, end_date, hard_deadline, welcome_text, contact_email "
         "FROM call_for_participations "

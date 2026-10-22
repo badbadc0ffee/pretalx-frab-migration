@@ -1,3 +1,4 @@
+import colorsys
 import datetime as dt
 import re
 from urllib.parse import urljoin, urlsplit
@@ -12,12 +13,14 @@ from django.utils.translation import gettext_lazy as _
 from django_scopes import scope, scopes_disabled
 from markdownify import MarkdownConverter
 
+from pretalx.common.ui import _relative_luminance
 from pretalx.event.domain.event import create_event, post_create_event
 from pretalx.event.models.event import (
     Event,
     default_display_settings,
     default_feature_flags,
 )
+from pretalx.submission.models import Track
 
 from .timezones import RAILS_TIMEZONES
 
@@ -102,6 +105,73 @@ def conference_intro(value, source_url):
     return MarkdownConverter(heading_style="ATX").convert_soup(soup).strip()
 
 
+def conference_color(value, field):
+    color = (value or "").strip()
+    if not color:
+        return None
+    color = "#" + color.removeprefix("#")
+    if not re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})", color):
+        raise ValidationError(
+            {field: _("The frab colour must contain three or six hexadecimal digits.")}
+        )
+    return color
+
+
+def track_color(value):
+    color = conference_color(value, "color") or "#fefd7f"
+    digits = color[1:]
+    if len(digits) == 3:
+        digits = "".join(channel * 2 for channel in digits)
+    rgb = tuple(int(digits[index : index + 2], 16) / 255 for index in (0, 2, 4))
+    hue, _, value = colorsys.rgb_to_hsv(*rgb)
+    # Match colorpicker.js: rounded contrast >= 2.5 on white and #121416.
+    dark_luminance = _relative_luminance(18 / 255, 20 / 255, 22 / 255)
+    readable = []
+    for level in range(256):
+        channels = tuple(
+            round(channel * 255)
+            for channel in colorsys.hsv_to_rgb(hue, 0.8, level / 255)
+        )
+        luminance = _relative_luminance(*(channel / 255 for channel in channels))
+        if (
+            round(1.05 / (luminance + 0.05), 1) >= 2.5
+            and round((luminance + 0.05) / (dark_luminance + 0.05), 1) >= 2.5
+        ):
+            readable.append(
+                (level, "#" + "".join(f"{channel:02X}" for channel in channels))
+            )
+    return min(readable, key=lambda candidate: abs(candidate[0] - round(value * 255)))[
+        1
+    ]
+
+
+def migrate_tracks(event, tracks):
+    for position, source in enumerate(tracks):
+        try:
+            name = forms.CharField(
+                max_length=Track._meta.get_field("name").max_length
+            ).clean(source["name"])
+            track = Track(
+                event=event,
+                name={event.locale: name},
+                color=track_color(source["color"]),
+                position=position,
+            )
+            track.full_clean()
+        except ValidationError as exc:
+            raise ValidationError(
+                {
+                    "tracks": _("Could not migrate frab track {id}: {error}").format(
+                        id=source["id"], error=" ".join(exc.messages)
+                    )
+                }
+            ) from exc
+        track.save()
+    if tracks:
+        event.cfp.fields["track"]["visibility"] = "optional"
+        event.cfp.save(update_fields=["fields"])
+
+
 def migrate_cfp(event, source, source_url):
     dates = {}
     for field in ("start_date", "hard_deadline", "end_date"):
@@ -138,7 +208,9 @@ def migrate_cfp(event, source, source_url):
 
 
 @transaction.atomic
-def migrate_conference(conference, *, organiser, user, source_url="", overrides=None):
+def migrate_conference(
+    conference, *, organiser, user, source_url="", overrides=None, import_tracks=True
+):
     """Create the selected event with the native pretalx creation function."""
     missing = missing_event_fields(conference)
     overrides = {
@@ -157,18 +229,9 @@ def migrate_conference(conference, *, organiser, user, source_url="", overrides=
         else conference_date(conference[REQUIRED_EVENT_FIELDS[field]], timezone, field)
         for field in ("date_from", "date_to")
     }
-    color = (conference["color"] or "").strip()
-    if color:
-        color = "#" + color.removeprefix("#")
-        if not re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})", color):
-            raise ValidationError(
-                {
-                    "primary_color": _(
-                        "The frab colour must contain three or six hexadecimal digits."
-                    )
-                }
-            )
+    color = conference_color(conference["color"], "primary_color")
     flags = default_feature_flags()
+    flags["use_tracks"] = import_tracks
     flags["use_feedback"] = conference_boolean(
         conference["feedback_enabled"], "feedback_enabled"
     )
@@ -200,4 +263,6 @@ def migrate_conference(conference, *, organiser, user, source_url="", overrides=
         post_create_event(event, user=user)
         if conference["cfp"]:
             migrate_cfp(event, conference["cfp"], source_url)
+        if import_tracks:
+            migrate_tracks(event, conference["tracks"])
     return event

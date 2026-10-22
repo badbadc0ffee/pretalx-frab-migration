@@ -132,6 +132,16 @@ class FrabConferenceForm(forms.Form):
             field.required = True
             self.fields[name] = field
 
+        if conference and len(conference["tracks"]) > 1:
+            self.fields["import_tracks"] = forms.BooleanField(
+                label=_("Migrate tracks"),
+                required=False,
+                initial=True,
+                help_text=_(
+                    'Clear this checkbox to skip all tracks and disable "Use tracks" for the new event.'
+                ),
+            )
+
         self.event_slug = ""
         self.slug_error = None
         if conference:

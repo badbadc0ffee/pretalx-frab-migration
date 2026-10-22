@@ -1,3 +1,4 @@
+import colorsys
 import datetime as dt
 import sqlite3
 from contextlib import closing
@@ -17,11 +18,14 @@ from django_scopes import scopes_disabled
 
 from pretalx.common.models import ActivityLog
 from pretalx.common.models.settings import GlobalSettings
+from pretalx.common.ui import _relative_luminance
 from pretalx.common.views.redirect import safelink
 from pretalx.event.domain import event as event_domain
 from pretalx.event.models import Event, Organiser
 from pretalx.event.models.event import default_display_settings, default_feature_flags
 from pretalx.mail.models import QueuedMail
+from pretalx.submission.interfaces.forms import InfoForm
+from pretalx.submission.models import Track
 
 from pretalx_frab_migration import migration, views
 from pretalx_frab_migration.database import fetch_conference
@@ -31,6 +35,7 @@ from pretalx_frab_migration.migration import (
     conference_intro,
     conference_timezone,
     migrate_conference,
+    track_color,
 )
 
 pytestmark = pytest.mark.django_db
@@ -65,12 +70,13 @@ def migration_post(admin_client, settings_url, migration_database):
     assert button.find_parent("form").find("select", attrs={"name": "conference"})
     return {
         "action": "migrate",
+        "import_tracks": "on",
         "conference": "42",
         "connection": response.context["conference_form"].initial["connection"],
     }
 
 
-def test_migrate_creates_only_the_event_with_native_initialisation(
+def test_migrate_creates_the_event_with_native_initialisation(
     admin_client,
     admin_user,
     organiser,
@@ -119,7 +125,13 @@ def test_migrate_creates_only_the_event_with_native_initialisation(
         assert event.submission_types.count() == 1
         assert event.schedules.count() == 1
         assert event.wip_schedule.version is None
-        assert event.rooms.count() == event.submissions.count() == 0
+        assert (
+            event.rooms.count()
+            == event.submissions.count()
+            == event.tracks.count()
+            == 0
+        )
+        assert event.cfp.fields["track"]["visibility"] == "do_not_ask"
         assert event.review_phases.exists()
         assert ActivityLog.objects.filter(
             event=event, person=admin_user, action_type="pretalx.event.create"
@@ -932,3 +944,222 @@ def test_cfp_has_no_deadline_when_both_source_dates_are_missing(
     assert admin_client.post(settings_url, migration_post).status_code == 302
     with scopes_disabled():
         assert Event.objects.get().cfp.deadline is None
+
+
+@pytest.fixture
+def frab_tracks(migration_database):
+    with closing(sqlite3.connect(migration_database)) as connection:
+        connection.executemany(
+            "INSERT INTO tracks (id, conference_id, name, color) VALUES (?, ?, ?, ?)",
+            (
+                (20, 42, "Zeta", "ABC"),
+                (10, 42, "Alpha", "12AbEF"),
+                (30, 42, "No colour", None),
+                (40, 7, "Other conference", "000000"),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO conferences (id, title, acronym, parent_id) VALUES (7, 'Child', 'CHILD', 42)"
+        )
+        connection.commit()
+    return migration_database
+
+
+def test_tracks_migrate_in_source_order_and_are_available_in_the_cfp(
+    admin_client, settings_url, migration_post, frab_tracks
+):
+    original = frab_tracks.read_bytes()
+    response = admin_client.post(settings_url, migration_post)
+    assert response.status_code == 302
+    assert response.url == settings_url
+    with scopes_disabled():
+        event = Event.objects.get()
+        assert event.feature_flags["use_tracks"] is True
+        tracks = list(event.tracks.all())
+        assert [(str(track.name), track.color, track.position) for track in tracks] == [
+            ("Alpha", "#2FB0EA", 0),
+            ("No colour", "#ABAA22", 1),
+            ("Zeta", "#297ACC", 2),
+        ]
+        assert Track.objects.count() == 3
+        assert all(not track.description for track in tracks)
+        assert all(not track.requires_access_code for track in tracks)
+        assert all(not track.attendee_signup_required for track in tracks)
+        form = InfoForm(event=event)
+        assert not form.fields["track"].required
+        assert list(form.fields["track"].queryset) == tracks
+        assert event.submissions.count() == 0
+    assert frab_tracks.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("name", None),
+        ("name", ""),
+        ("name", "x" * 201),
+        ("name", "Alpha"),
+        ("color", "red"),
+        ("color", "#1234"),
+        ("color", "1234567"),
+    ),
+)
+def test_invalid_track_rolls_back_the_complete_migration(
+    admin_client, settings_url, migration_post, frab_tracks, organiser, field, value
+):
+    with closing(sqlite3.connect(frab_tracks)) as connection:
+        connection.execute(f"UPDATE tracks SET {field} = ? WHERE id = 20", (value,))
+        connection.commit()
+    with scopes_disabled():
+        team_count = organiser.teams.count()
+    response = admin_client.post(settings_url, migration_post)
+    assert response.status_code == 200
+    assert "Could not migrate frab track 20" in str(
+        response.context["conference_form"].non_field_errors()
+    )
+    with scopes_disabled():
+        assert not Event.objects.exists()
+        assert not Track.objects.exists()
+        assert organiser.teams.count() == team_count
+
+
+@pytest.mark.parametrize(
+    ("color", "expected"),
+    (("", "#ABAA22"), ("  ", "#ABAA22"), (" #123456 ", "#1D5791")),
+)
+def test_track_colour_normalisation(
+    admin_client, settings_url, migration_post, frab_tracks, color, expected
+):
+    with closing(sqlite3.connect(frab_tracks)) as connection:
+        connection.execute("UPDATE tracks SET color = ? WHERE id = 20", (color,))
+        connection.commit()
+    assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        assert str(Track.objects.get(name__icontains="Zeta").color) == expected
+
+
+@pytest.mark.parametrize("hue", (0, 1 / 6, 1 / 3, 1 / 2, 2 / 3, 5 / 6))
+@pytest.mark.parametrize("value", (0.2, 0.6, 1.0))
+def test_track_colour_preserves_hue_and_clamps_value_to_good_contrast(hue, value):
+    source_rgb = tuple(
+        round(channel * 255) for channel in colorsys.hsv_to_rgb(hue, 0.3, value)
+    )
+    source = "#" + "".join(f"{channel:02X}" for channel in source_rgb)
+    source_hue, _, source_value = colorsys.rgb_to_hsv(
+        *(channel / 255 for channel in source_rgb)
+    )
+    result = track_color(source)
+    rgb = tuple(int(result[index : index + 2], 16) / 255 for index in (1, 3, 5))
+    result_hue, saturation, result_value = colorsys.rgb_to_hsv(*rgb)
+    difference = abs(result_hue - source_hue)
+    assert min(difference, 1 - difference) < 1 / 360
+    assert saturation == pytest.approx(0.8, abs=0.006)
+
+    def readable(channels):
+        luminance = _relative_luminance(*channels)
+        dark = _relative_luminance(18 / 255, 20 / 255, 22 / 255)
+        return (
+            round(1.05 / (luminance + 0.05), 1) >= 2.5
+            and round((luminance + 0.05) / (dark + 0.05), 1) >= 2.5
+        )
+
+    assert readable(rgb)
+    if result_value != source_value:
+        direction = 1 if source_value > result_value else -1
+        next_value = (round(result_value * 255) + direction) / 255
+        next_rgb = tuple(
+            round(channel * 255) / 255
+            for channel in colorsys.hsv_to_rgb(source_hue, 0.8, next_value)
+        )
+        assert not readable(next_rgb)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"), (("#000000", "#A32121"), ("#FFFFFF", "#FF3333"))
+)
+def test_track_colour_uses_hsv_zero_hue_for_grey(source, expected):
+    assert track_color(source) == expected
+
+
+@pytest.mark.parametrize("track_count", (0, 1, 2))
+def test_track_checkbox_is_shown_only_for_multiple_tracks(
+    admin_client, settings_url, migration_post, frab_tracks, track_count
+):
+    with closing(sqlite3.connect(frab_tracks)) as connection:
+        connection.execute(
+            "DELETE FROM tracks WHERE conference_id = 42 AND id NOT IN "
+            "(SELECT id FROM tracks WHERE conference_id = 42 ORDER BY id LIMIT ?)",
+            (track_count,),
+        )
+        connection.commit()
+    # A conference selection must restore the default, even after a cleared checkbox.
+    data = {
+        key: value for key, value in migration_post.items() if key != "import_tracks"
+    }
+    response = admin_client.post(settings_url, {**data, "action": "select"})
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.content, "html.parser")
+    checkbox = soup.find("input", attrs={"name": "import_tracks"})
+    if track_count > 1:
+        assert checkbox["type"] == "checkbox"
+        assert checkbox.has_attr("checked")
+        assert not checkbox.has_attr("required")
+        assert checkbox.find_parent("form").find("button", value="migrate")
+    else:
+        assert checkbox is None
+        response = admin_client.post(settings_url, data)
+        assert response.status_code == 302
+        with scopes_disabled():
+            event = Event.objects.get()
+            assert event.tracks.count() == track_count
+            assert event.feature_flags["use_tracks"] is True
+
+
+@pytest.mark.parametrize("import_tracks", (False, True))
+@pytest.mark.parametrize("action", ("check_slug", "migrate"))
+def test_track_choice_survives_slug_checks_and_form_errors(
+    admin_client, settings_url, migration_post, frab_tracks, import_tracks, action
+):
+    update_source(frab_tracks, acronym=None, email=None)
+    data = {**migration_post, "action": action, "slug": "manual-slug"}
+    if not import_tracks:
+        del data["import_tracks"]
+    response = admin_client.post(settings_url, data)
+    assert response.status_code == 200
+    form = response.context["conference_form"]
+    checkbox = BeautifulSoup(response.content, "html.parser").find(
+        "input", attrs={"name": "import_tracks"}
+    )
+    assert checkbox.has_attr("checked") is import_tracks
+    if action == "migrate":
+        assert form.has_error("email")
+    with scopes_disabled():
+        assert not Event.objects.exists()
+
+
+@pytest.mark.parametrize("invalid_tracks", (False, True))
+def test_unchecked_tracks_are_skipped_and_the_feature_is_disabled(
+    admin_client, settings_url, migration_post, frab_tracks, frab_cfp, invalid_tracks
+):
+    if invalid_tracks:
+        with closing(sqlite3.connect(frab_tracks)) as connection:
+            connection.execute(
+                "UPDATE tracks SET name = NULL, color = 'invalid' WHERE conference_id = 42"
+            )
+            connection.commit()
+    original = frab_tracks.read_bytes()
+    data = {
+        key: value for key, value in migration_post.items() if key != "import_tracks"
+    }
+    response = admin_client.post(settings_url, data)
+    assert response.status_code == 302
+    assert response.url == settings_url
+    with scopes_disabled():
+        event = Event.objects.get()
+        assert event.feature_flags["use_tracks"] is False
+        assert not Track.objects.exists()
+        assert event.cfp.fields["track"]["visibility"] == "do_not_ask"
+        assert "track" not in InfoForm(event=event).fields
+        assert event.cfp.deadline.astimezone(event.tz).date() == dt.date(2020, 3, 29)
+        assert "Submit a talk" in str(event.cfp.text)
+    assert frab_tracks.read_bytes() == original

@@ -129,7 +129,10 @@ class FrabMigrationView(PermissionRequired, FormView):
                         initial.update(
                             {
                                 key: self.request.POST.get(key, "")
-                                for key in missing_event_fields(conference)
+                                for key in (
+                                    *missing_event_fields(conference),
+                                    "import_tracks",
+                                )
                             }
                         )
                     conference_form = FrabConferenceForm(
@@ -148,6 +151,9 @@ class FrabMigrationView(PermissionRequired, FormView):
                                 organiser=self.request.organiser,
                                 user=self.request.user,
                                 source_url=source_url,
+                                import_tracks=conference_form.cleaned_data.get(
+                                    "import_tracks", True
+                                ),
                                 overrides={
                                     key: conference_form.cleaned_data[key]
                                     for key in conference_form.missing_fields

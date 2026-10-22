@@ -87,3 +87,5 @@ locale/
 
 .pytest_cache
 uv.lock
+docs
+.gitignore
