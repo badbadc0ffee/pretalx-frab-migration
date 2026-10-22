@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from bs4 import BeautifulSoup
 from django.conf import settings
+from django.contrib import messages
 from django.core import signing
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
@@ -16,6 +17,7 @@ from django_scopes import scopes_disabled
 
 from pretalx.common.models import ActivityLog
 from pretalx.common.models.settings import GlobalSettings
+from pretalx.common.views.redirect import safelink
 from pretalx.event.domain import event as event_domain
 from pretalx.event.models import Event, Organiser
 from pretalx.event.models.event import default_display_settings, default_feature_flags
@@ -111,6 +113,9 @@ def test_migrate_creates_only_the_event_with_native_initialisation(
         assert "**friends**" in intro
         assert "[Details](https://frab.example.org/info)" in intro
         assert event.cfp.default_type.name.localize(settings.LANGUAGE_CODE) == "Talk"
+        assert event.cfp.opening is None
+        assert event.cfp.deadline is None
+        assert not event.cfp.text
         assert event.submission_types.count() == 1
         assert event.schedules.count() == 1
         assert event.wip_schedule.version is None
@@ -618,7 +623,11 @@ def test_selection_detects_slug_conflicts_and_blocks_migration(
     assert "email" in form.fields
     soup = BeautifulSoup(response.content, "html.parser")
     assert soup.find("button", value="migrate").has_attr("disabled")
-    assert soup.find("div", role="alert").get_text(strip=True) == str(form.slug_error)
+    assert any(
+        notice.level == messages.ERROR and str(notice) == str(form.slug_error)
+        for notice in response.context["messages"]
+    )
+    assert str(form.slug_error) in soup.get_text()
     assert b"ask the owner" not in response.content
 
     response = admin_client.post(
@@ -746,3 +755,180 @@ def test_export_url_is_copied_without_conditions(
             "html_export_url": source_url or "",
         }
     assert migration_database.read_bytes() == original
+
+
+@pytest.fixture
+def frab_cfp(migration_database):
+    with closing(sqlite3.connect(migration_database)) as connection:
+        connection.execute(
+            "INSERT INTO call_for_participations "
+            "(conference_id, start_date, end_date, hard_deadline, welcome_text, info_url, contact_email) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                42,
+                "2020-03-28",
+                "2020-03-28",
+                "2020-03-29",
+                '<h2>Submit a talk</h2><p>Read the <a href="/guide">guide</a>.</p><script>unsafe-script</script>',
+                "/cfp-info",
+                "speakers@example.org",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO call_for_participations (conference_id, welcome_text) VALUES (?, ?)",
+            (7, "Other conference text"),
+        )
+        connection.commit()
+    return migration_database
+
+
+@pytest.mark.parametrize("hard_deadline", (None, "", "2020-03-29"))
+def test_cfp_content_dates_and_submission_window_are_migrated(
+    admin_client, settings_url, migration_post, frab_cfp, monkeypatch, hard_deadline
+):
+    with closing(sqlite3.connect(frab_cfp)) as connection:
+        connection.execute(
+            "UPDATE call_for_participations SET hard_deadline = ? WHERE conference_id = 42",
+            (hard_deadline,),
+        )
+        connection.commit()
+    original = frab_cfp.read_bytes()
+    response = admin_client.post(settings_url, migration_post)
+    assert response.status_code == 302
+    assert response.url == settings_url
+    with scopes_disabled():
+        event = Event.objects.get()
+        cfp = event.cfp
+        assert event.email == "orga@example.org"
+        assert cfp.opening == dt.datetime(2020, 3, 27, 23, tzinfo=dt.UTC)
+        if hard_deadline:
+            assert cfp.deadline == dt.datetime(
+                2020, 3, 29, 21, 59, 59, 999999, tzinfo=dt.UTC
+            )
+        else:
+            assert cfp.deadline == dt.datetime(
+                2020, 3, 28, 22, 59, 59, 999999, tzinfo=dt.UTC
+            )
+        text = cfp.text.localize(event.locale)
+        assert (
+            text
+            == "## Submit a talk\n\nRead the [guide](https://frab.example.org/guide)."
+        )
+        cfp_url = str(cfp.urls.public)
+        for moment, expected in (
+            (dt.datetime(2020, 3, 27, 22, 59, 59, tzinfo=dt.UTC), False),
+            (dt.datetime(2020, 3, 27, 23, tzinfo=dt.UTC), True),
+            (dt.datetime(2020, 3, 28, 22, 59, 59, tzinfo=dt.UTC), True),
+            (dt.datetime(2020, 3, 28, 23, tzinfo=dt.UTC), bool(hard_deadline)),
+            (dt.datetime(2020, 3, 29, 21, 59, 59, tzinfo=dt.UTC), bool(hard_deadline)),
+            (dt.datetime(2020, 3, 29, 22, tzinfo=dt.UTC), False),
+        ):
+            monkeypatch.setattr(
+                "pretalx.submission.models.cfp.now", lambda moment=moment: moment
+            )
+            assert Event.objects.get().cfp.is_open is expected
+    public_response = Client().get(cfp_url)
+    assert public_response.status_code == 200
+    assert b"Submit a talk" in public_response.content
+    assert b"mailto:speakers@example.org" not in public_response.content
+    assert b"cfp-info" not in public_response.content
+    assert BeautifulSoup(public_response.content, "html.parser").find(
+        "a", href=safelink("https://frab.example.org/guide")
+    )
+    assert b"unsafe-script" not in public_response.content
+    assert frab_cfp.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("start_date", "bad-date"),
+        ("end_date", "bad-date"),
+        ("hard_deadline", "bad-date"),
+        ("end_date", "2020-03-27"),
+        ("hard_deadline", "2020-03-27"),
+    ),
+)
+def test_invalid_cfp_rolls_back_event_and_organiser_access(
+    admin_client, settings_url, migration_post, frab_cfp, organiser, field, value
+):
+    with closing(sqlite3.connect(frab_cfp)) as connection:
+        connection.execute(
+            f"UPDATE call_for_participations SET {field} = ? WHERE conference_id = 42",
+            (value,),
+        )
+        if field == "end_date":
+            connection.execute(
+                "UPDATE call_for_participations SET hard_deadline = NULL WHERE conference_id = 42"
+            )
+        connection.commit()
+    with scopes_disabled():
+        team_count = organiser.teams.count()
+    response = admin_client.post(settings_url, migration_post)
+    assert response.status_code == 200
+    assert f"cfp_{field}" in str(response.context["conference_form"].non_field_errors())
+    with scopes_disabled():
+        assert not Event.objects.exists()
+        assert organiser.teams.count() == team_count
+
+
+def test_cfp_accepts_native_database_dates(frab_cfp, organiser, admin_user):
+    source = fetch_conference(42, backend="sqlite3", name=str(frab_cfp))
+    for field in ("start_date", "end_date", "hard_deadline"):
+        source["cfp"][field] = dt.date.fromisoformat(source["cfp"][field])
+    event = migrate_conference(
+        source,
+        organiser=organiser,
+        user=admin_user,
+        source_url="https://frab.example.org",
+    )
+    with scopes_disabled():
+        event = Event.objects.get(pk=event.pk)
+        assert event.cfp.opening.astimezone(event.tz).date() == dt.date(2020, 3, 28)
+        assert event.cfp.deadline.astimezone(event.tz).date() == dt.date(2020, 3, 29)
+
+
+@pytest.mark.parametrize("welcome_text", (None, "", "  \n  "))
+def test_missing_cfp_text_stays_empty(
+    admin_client, settings_url, migration_post, frab_cfp, welcome_text
+):
+    with closing(sqlite3.connect(frab_cfp)) as connection:
+        connection.execute(
+            "UPDATE call_for_participations SET welcome_text = ? WHERE conference_id = 42",
+            (welcome_text,),
+        )
+        connection.commit()
+    assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        assert not Event.objects.get().cfp.text.localize(settings.LANGUAGE_CODE)
+
+
+def test_cfp_ignores_unused_metadata_and_backup_date(
+    admin_client, settings_url, migration_post, frab_cfp
+):
+    with closing(sqlite3.connect(frab_cfp)) as connection:
+        connection.execute("ALTER TABLE call_for_participations DROP COLUMN info_url")
+        connection.execute(
+            "UPDATE call_for_participations SET end_date = 'invalid-date', "
+            "contact_email = 'invalid-email' WHERE conference_id = 42"
+        )
+        connection.commit()
+    assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        event = Event.objects.get()
+        assert event.email == "orga@example.org"
+        assert event.cfp.deadline.astimezone(event.tz).date() == dt.date(2020, 3, 29)
+
+
+def test_cfp_has_no_deadline_when_both_source_dates_are_missing(
+    admin_client, settings_url, migration_post, frab_cfp
+):
+    with closing(sqlite3.connect(frab_cfp)) as connection:
+        connection.execute(
+            "UPDATE call_for_participations SET hard_deadline = NULL, end_date = NULL "
+            "WHERE conference_id = 42"
+        )
+        connection.commit()
+    assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        assert Event.objects.get().cfp.deadline is None

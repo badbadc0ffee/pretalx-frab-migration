@@ -20,26 +20,14 @@
         <p>{% translate "Connect reads the conferences and saves these settings if the read succeeds." %}</p>
         {% include "orga/includes/submit_row.html" %}
     </form>
-    <h3>{% translate "Conferences" %}</h3>
-    {% if connection_error %}
-        <div class="alert alert-danger mt-3" role="alert">{{ connection_error }}</div>
-    {% elif connected %}
-        <div class="alert alert-success mt-3" role="status">
-            {% if conference_form %}
-                {% translate "Connection successful. Select a conference." %}
-            {% else %}
-                {% translate "Connection successful. This database has no conferences." %}
-            {% endif %}
-        </div>
+    {% if connected %}
+        <h3>{% translate "Conferences" %}</h3>
         {% if conference_form %}
             <form method="post" class="mt-3" data-frab-conference>
                 {% csrf_token %}
                 {{ conference_form }}
-                {% if conference_form.slug_error and not conference_form.is_bound %}
-                    <div class="alert alert-danger" role="alert">{{ conference_form.slug_error }}</div>
-                {% endif %}
                 <p>
-                    {% translate "Migrate creates a public event for this organiser. It does not import talks or speakers." %}
+                    {% translate "Migrate creates a public event and its CfP for this organiser. It does not import talks or speakers." %}
                 </p>
                 <button
                     type="submit"

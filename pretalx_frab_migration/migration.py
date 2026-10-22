@@ -102,6 +102,41 @@ def conference_intro(value, source_url):
     return MarkdownConverter(heading_style="ATX").convert_soup(soup).strip()
 
 
+def migrate_cfp(event, source, source_url):
+    dates = {}
+    for field in ("start_date", "hard_deadline", "end_date"):
+        if field == "end_date" and dates["hard_deadline"]:
+            continue
+        try:
+            dates[field] = forms.DateField(required=False).clean(source[field])
+        except ValidationError as exc:
+            raise ValidationError({f"cfp_{field}": exc.messages}) from exc
+    deadline_field = "hard_deadline" if dates["hard_deadline"] else "end_date"
+    deadline = dates[deadline_field]
+    if dates["start_date"] and deadline and deadline < dates["start_date"]:
+        raise ValidationError(
+            {
+                f"cfp_{deadline_field}": _(
+                    "The CfP deadline must not precede its opening date."
+                )
+            }
+        )
+    cfp = event.cfp
+    cfp.opening = (
+        dt.datetime.combine(dates["start_date"], dt.time.min, tzinfo=event.tz)
+        if dates["start_date"]
+        else None
+    )
+    cfp.deadline = (
+        dt.datetime.combine(deadline, dt.time.max, tzinfo=event.tz)
+        if deadline
+        else None
+    )
+    cfp.text = {event.locale: conference_intro(source["welcome_text"], source_url)}
+    cfp.full_clean()
+    cfp.save(update_fields=["opening", "deadline", "text"])
+
+
 @transaction.atomic
 def migrate_conference(conference, *, organiser, user, source_url="", overrides=None):
     """Create the selected event with the native pretalx creation function."""
@@ -163,4 +198,6 @@ def migrate_conference(conference, *, organiser, user, source_url="", overrides=
         )
     with scope(event=event):
         post_create_event(event, user=user)
+        if conference["cfp"]:
+            migrate_cfp(event, conference["cfp"], source_url)
     return event

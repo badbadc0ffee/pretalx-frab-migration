@@ -161,7 +161,8 @@ def migration_database(tmp_path):
         """)
         connection.execute("""
             CREATE TABLE call_for_participations (
-                id INTEGER PRIMARY KEY, conference_id INTEGER, contact_email TEXT
+                id INTEGER PRIMARY KEY, conference_id INTEGER, contact_email TEXT,
+                start_date DATE, end_date DATE, hard_deadline DATE, welcome_text TEXT, info_url TEXT
             )
         """)
         connection.execute("""

@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pymysql
 import pytest
+from django.contrib import messages
 from django.test import Client
 from django.urls import reverse
 
@@ -32,6 +33,7 @@ def test_page_and_save_do_not_connect(
     response = admin_client.get(settings_url)
     assert response.status_code == 200
     assert b'value="connect"' in response.content
+    assert b"<h3>Conferences</h3>" not in response.content
     assert b'name="conference"' not in response.content
     data = {**connection_data, "action": "save"}
     response = admin_client.post(settings_url, data)
@@ -46,6 +48,12 @@ def test_connect_shows_conferences_in_organiser_context(
 
     assert response.status_code == 200
     assert response.context["connected"] is True
+    assert b"<h3>Conferences</h3>" in response.content
+    notices = list(response.context["messages"])
+    assert [(notice.level, str(notice)) for notice in notices] == [
+        (messages.SUCCESS, "Connection successful. Select a conference.")
+    ]
+    assert response.content.count(b"Connection successful. Select a conference.") == 1
     assert response.wsgi_request.organiser == organiser
     assert response.wsgi_request.event is None
     choices = response.context["conference_form"].fields["conference"].choices
@@ -104,7 +112,9 @@ def test_connect_failure_keeps_saved_settings_and_hides_password(
     )
 
     assert response.status_code == 200
-    assert "Could not connect" in response.context["connection_error"]
+    assert "Could not connect" in str(list(response.context["messages"])[0])
+    assert list(response.context["messages"])[0].level == messages.ERROR
+    assert b"<h3>Conferences</h3>" not in response.content
     assert b"new-password-secret" not in response.content
     assert b'name="conference"' not in response.content
     assert GlobalSettings().settings.get("frab_migration_db_name") == "saved-frab"
@@ -119,8 +129,11 @@ def test_empty_database_shows_a_message(
     response = admin_client.post(settings_url, connection_data)
 
     assert response.context["connected"] is True
+    assert b"<h3>Conferences</h3>" in response.content
     assert response.context["conference_form"] is None
-    assert b"This database has no conferences" in response.content
+    assert [(notice.level, str(notice)) for notice in response.context["messages"]] == [
+        (messages.SUCCESS, "Connection successful. This database has no conferences.")
+    ]
 
 
 def test_wrong_database_schema_shows_an_error(
@@ -132,7 +145,9 @@ def test_wrong_database_schema_shows_an_error(
     response = admin_client.post(settings_url, connection_data)
 
     assert response.status_code == 200
-    assert "conference list could not be read" in response.context["connection_error"]
+    assert "conference list could not be read" in str(
+        list(response.context["messages"])[0]
+    )
     assert b'name="conference"' not in response.content
     assert GlobalSettings().settings.get("frab_migration_db_backend") is None
 
@@ -141,7 +156,7 @@ def test_connect_requires_database_settings(admin_client, settings_url):
     response = admin_client.post(settings_url, {"action": "connect"})
 
     assert response.status_code == 200
-    assert "Select a database type" in response.context["connection_error"]
+    assert "Select a database type" in str(list(response.context["messages"])[0])
 
 
 def test_invalid_settings_do_not_connect(
@@ -187,7 +202,10 @@ def test_conference_list_is_not_kept_for_another_request(
 ):
     response = admin_client.post(settings_url, connection_data)
     assert response.context["connected"] is True
+    assert b"<h3>Conferences</h3>" in response.content
     response = admin_client.get(settings_url)
+    assert not list(response.context["messages"])
+    assert b"<h3>Conferences</h3>" not in response.content
     assert b'name="conference"' not in response.content
     response = admin_client.post(
         reverse(

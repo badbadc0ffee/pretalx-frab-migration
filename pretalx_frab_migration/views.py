@@ -66,9 +66,8 @@ class FrabMigrationView(PermissionRequired, FormView):
         try:
             conferences = fetch_conferences(**options)
         except FrabDatabaseError as exc:
-            return self.render_to_response(
-                self.get_context_data(form=form, connection_error=str(exc))
-            )
+            messages.error(self.request, str(exc))
+            return self.render_to_response(self.get_context_data(form=form))
         form.save()
         token = signing.dumps(
             self.connection_identity(options, form.cleaned_data["frab_migration_url"]),
@@ -78,6 +77,12 @@ class FrabMigrationView(PermissionRequired, FormView):
             FrabConferenceForm(conferences=conferences, initial={"connection": token})
             if conferences
             else None
+        )
+        messages.success(
+            self.request,
+            _("Connection successful. Select a conference.")
+            if conferences
+            else _("Connection successful. This database has no conferences."),
         )
         return self.render_to_response(
             self.get_context_data(
@@ -103,14 +108,10 @@ class FrabMigrationView(PermissionRequired, FormView):
         except signing.BadSignature:
             identity = None
         if identity != self.connection_identity(options, source_url):
-            return self.render_to_response(
-                self.get_context_data(
-                    form=form,
-                    connection_error=_(
-                        "Connect again before you migrate a conference."
-                    ),
-                )
+            messages.error(
+                self.request, _("Connect again before you migrate a conference.")
             )
+            return self.render_to_response(self.get_context_data(form=form))
         try:
             conferences = fetch_conferences(**options)
             conference_form = FrabConferenceForm(
@@ -183,9 +184,14 @@ class FrabMigrationView(PermissionRequired, FormView):
                             )
                             return redirect(self.get_success_url())
         except FrabDatabaseError as exc:
-            return self.render_to_response(
-                self.get_context_data(form=form, connection_error=str(exc))
-            )
+            messages.error(self.request, str(exc))
+            return self.render_to_response(self.get_context_data(form=form))
+        if (
+            conference_form
+            and not conference_form.is_bound
+            and conference_form.slug_error
+        ):
+            messages.error(self.request, conference_form.slug_error)
         return self.render_to_response(
             self.get_context_data(
                 form=form, connected=True, conference_form=conference_form

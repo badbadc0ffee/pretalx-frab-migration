@@ -126,8 +126,17 @@ CONFERENCE_FIELDS = (
 )
 
 
+CFP_FIELDS = (
+    "start_date",
+    "end_date",
+    "hard_deadline",
+    "welcome_text",
+    "contact_email",
+)
+
+
 def fetch_conference(conference_id, **options):
-    """Read one conference, its inherited dates and timezone, and its fallback email."""
+    """Read one conference, its inherited dates and timezone, and its CfP."""
     placeholder = "?" if options["backend"] == "sqlite3" else "%s"
     # Only constant column names and the driver's placeholder enter the SQL text.
     query = f"SELECT {', '.join(CONFERENCE_FIELDS)} FROM conferences WHERE id = {placeholder}"  # noqa: S608
@@ -154,10 +163,10 @@ def fetch_conference(conference_id, **options):
             seen.add(parent["id"])
         for field in ("timezone", "start_date", "end_date"):
             conference[field] = parent[field]
-        if not (conference["email"] or "").strip():
-            cfp_query = f"SELECT contact_email FROM call_for_participations WHERE conference_id = {placeholder} ORDER BY id LIMIT 1"  # noqa: S608 -- driver placeholder only
-            cursor.execute(cfp_query, (conference["id"],))
-            cfp = cursor.fetchone()
-            if cfp:
-                conference["email"] = (cfp[0] or "").strip()
+        cfp_query = f"SELECT {', '.join(CFP_FIELDS)} FROM call_for_participations WHERE conference_id = {placeholder} ORDER BY id LIMIT 1"  # noqa: S608 -- constant columns and driver placeholder only
+        cursor.execute(cfp_query, (conference["id"],))
+        row = cursor.fetchone()
+        conference["cfp"] = dict(zip(CFP_FIELDS, row, strict=True)) if row else None
+        if conference["cfp"] and not (conference["email"] or "").strip():
+            conference["email"] = (conference["cfp"]["contact_email"] or "").strip()
         return conference

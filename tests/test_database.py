@@ -172,23 +172,26 @@ def test_server_selected_conference_uses_bound_parameters(monkeypatch, backend):
     driver = pymysql if backend == "mysql" else psycopg
     connection = Mock()
     cursor = connection.cursor.return_value
-    cursor.fetchone.return_value = (
-        42,
-        "Title",
-        "CONF",
-        "UTC",
+    cursor.fetchone.side_effect = [
+        (
+            42,
+            "Title",
+            "CONF",
+            "UTC",
+            None,
+            None,
+            "orga@example.org",
+            None,
+            0,
+            None,
+            None,
+            None,
+        ),
         None,
-        None,
-        "orga@example.org",
-        None,
-        0,
-        None,
-        None,
-        None,
-    )
+    ]
     monkeypatch.setattr(driver, "connect", Mock(return_value=connection))
     row = database.fetch_conference(42, backend=backend, name="frab")
-    query, parameters = cursor.execute.call_args.args
+    query, parameters = cursor.execute.call_args_list[-2].args
     assert query.endswith("WHERE id = %s")
     assert parameters == (42,)
     assert "feedback_token" not in query
@@ -206,22 +209,25 @@ def test_selected_conference_does_not_interpolate_sql(migration_database):
 
 
 @pytest.mark.parametrize("backend", ("mysql", "postgresql"))
-def test_server_cfp_email_lookup_uses_bound_parameters(monkeypatch, backend):
+def test_server_cfp_lookup_uses_bound_parameters(monkeypatch, backend):
     driver = pymysql if backend == "mysql" else psycopg
     connection = Mock()
     cursor = connection.cursor.return_value
     cursor.fetchone.side_effect = [
         (42, "Title", "CONF", "UTC", None, None, None, None, 0, None, None, None),
-        ("cfp@example.org",),
+        ("2020-01-01", "2020-02-01", None, "Welcome", "cfp@example.org"),
     ]
     monkeypatch.setattr(driver, "connect", Mock(return_value=connection))
 
     row = database.fetch_conference(42, backend=backend, name="frab")
 
     assert row["email"] == "cfp@example.org"
+    assert row["cfp"]["welcome_text"] == "Welcome"
+    assert row["cfp"]["start_date"] == "2020-01-01"
     query, parameters = cursor.execute.call_args.args
     assert query == (
-        "SELECT contact_email FROM call_for_participations "
+        "SELECT start_date, end_date, hard_deadline, welcome_text, contact_email "
+        "FROM call_for_participations "
         "WHERE conference_id = %s ORDER BY id LIMIT 1"
     )
     assert parameters == (42,)
@@ -244,3 +250,4 @@ def test_child_conference_does_not_use_its_parents_cfp_email(migration_database)
     row = database.fetch_conference(7, backend="sqlite3", name=str(migration_database))
 
     assert row["email"] is None
+    assert row["cfp"] is None
