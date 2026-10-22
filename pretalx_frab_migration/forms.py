@@ -1,6 +1,9 @@
+import uuid
+
 from django import forms
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
+from django.db import transaction
 from django.utils.translation import gettext_lazy as _
 from django_scopes import scopes_disabled
 
@@ -14,6 +17,7 @@ from .migration import (
     conference_submission_types,
     missing_event_fields,
 )
+from .speakers import validate_source_url
 
 
 class FrabMigrationSettingsForm(GlobalSettingsForm):
@@ -82,6 +86,28 @@ class FrabMigrationSettingsForm(GlobalSettingsForm):
         required=False,
     )
 
+    frab_migration_new_source = forms.BooleanField(
+        label=_("Use a different frab database"),
+        required=False,
+        help_text=_(
+            "Select this only when you switch to another source database. Keep it clear for password, server, or URL changes."
+        ),
+    )
+
+    def clean_frab_migration_url(self):
+        return validate_source_url(self.cleaned_data["frab_migration_url"])
+
+    @transaction.atomic
+    def save(self):
+        new_source = self.cleaned_data["frab_migration_new_source"]
+        self.cleaned_data["frab_migration_new_source"] = False
+        super().save()
+        if self.cleaned_data["frab_migration_db_backend"] and (
+            new_source
+            or not self.obj.settings.get("frab_migration_source_id", default="")
+        ):
+            self.obj.settings.set("frab_migration_source_id", str(uuid.uuid4()))
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.initial.pop("frab_migration_db_password", None)
@@ -112,13 +138,34 @@ class FrabConferenceForm(forms.Form):
     connection = forms.CharField(widget=forms.HiddenInput)
     conference = forms.ChoiceField(label=_("Conference"))
 
-    def __init__(self, *args, conferences, conference=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        conferences,
+        conference=None,
+        event=None,
+        existing_events=(),
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.fields["conference"].choices = [("", _("Select a conference"))] + [
             (str(conference_id), f"{title} ({acronym})")
             for conference_id, title, acronym in conferences
         ]
-        self.missing_fields = missing_event_fields(conference) if conference else []
+        self.target_event = event
+        if existing_events:
+            self.fields["existing_event"] = forms.ChoiceField(
+                label=_("Previously imported event"),
+                required=False,
+                choices=[("", _("Create a new event"))]
+                + [(str(e.pk), str(e.name)) for e in existing_events],
+                help_text=_(
+                    "Select an event only to link an earlier import to this source conference. This action imports speakers only."
+                ),
+            )
+        self.missing_fields = (
+            missing_event_fields(conference) if conference and not event else []
+        )
         for name in self.missing_fields:
             model_field = Event._meta.get_field(name)
             if name == "name":
@@ -136,7 +183,7 @@ class FrabConferenceForm(forms.Form):
             field.required = True
             self.fields[name] = field
 
-        if conference and len(conference["tracks"]) > 1:
+        if conference and not event and len(conference["tracks"]) > 1:
             self.fields["import_tracks"] = forms.BooleanField(
                 label=_("Migrate tracks"),
                 required=False,
@@ -146,7 +193,11 @@ class FrabConferenceForm(forms.Form):
                 ),
             )
 
-        if conference and len(conference_submission_types(conference)) > 1:
+        if (
+            conference
+            and not event
+            and len(conference_submission_types(conference)) > 1
+        ):
             self.fields["import_submission_types"] = forms.BooleanField(
                 label=_("Migrate session types"),
                 required=False,
@@ -158,7 +209,7 @@ class FrabConferenceForm(forms.Form):
 
         self.event_slug = ""
         self.slug_error = None
-        if conference:
+        if conference and not event:
             value = conference["acronym"]
             if "slug" in self.missing_fields:
                 values = self.data if self.is_bound else self.initial
@@ -168,6 +219,8 @@ class FrabConferenceForm(forms.Form):
 
     def check_slug(self):
         self.slug_error = None
+        if self.target_event:
+            return None
         with scopes_disabled():
             try:
                 validate_event_slug_unique(self.event_slug)

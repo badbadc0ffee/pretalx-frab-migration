@@ -176,6 +176,16 @@ def migration_database(tmp_path):
                 id INTEGER PRIMARY KEY, code TEXT, attachable_id INTEGER, attachable_type TEXT
             )
         """)
+        connection.execute("""CREATE TABLE people (
+            id INTEGER PRIMARY KEY, public_name TEXT, first_name TEXT, last_name TEXT,
+            email TEXT, abstract TEXT, description TEXT, note TEXT
+        )""")
+        connection.execute(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, conference_id INTEGER)"
+        )
+        connection.execute(
+            "CREATE TABLE event_people (id INTEGER PRIMARY KEY, event_id INTEGER, person_id INTEGER, event_role TEXT)"
+        )
         connection.execute("""
             INSERT INTO conferences VALUES (
                 42, 'Alpha & Friends', 'AF_2026', 'Berlin',

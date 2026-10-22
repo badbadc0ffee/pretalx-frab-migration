@@ -22,6 +22,7 @@ def test_admin_can_access_settings_without_an_event(admin_client, settings_url):
         "frab_migration_db_port",
         "frab_migration_db_user",
         "frab_migration_db_password",
+        "frab_migration_new_source",
     ]
     assert response.context["form"][FRAB_URL_SETTING].value() in (None, "")
     assert GlobalSettings().settings.get(FRAB_URL_SETTING) is None

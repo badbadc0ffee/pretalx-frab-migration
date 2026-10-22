@@ -94,7 +94,7 @@ def _cursor(*, backend, name, host="", port=None, user="", password="", detail=F
             _(
                 "The database is reachable, but the selected conference could not be read. "
                 "Check that this is a frab database and that the database user can read "
-                "the conferences, call_for_participations, tracks, and languages tables."
+                "the conferences, call_for_participations, tracks, languages, people, events, and event_people tables."
             )
             if detail
             else _(
@@ -182,3 +182,30 @@ def fetch_conference(conference_id, **options):
         cursor.execute(language_query, (conference["id"], "Conference"))
         conference["languages"] = [row[0] for row in cursor.fetchall()]
         return conference
+
+
+PERSON_FIELDS = (
+    "id",
+    "public_name",
+    "first_name",
+    "last_name",
+    "email",
+    "abstract",
+    "description",
+    "note",
+)
+
+
+def fetch_speakers(conference_id, **options):
+    placeholder = "?" if options["backend"] == "sqlite3" else "%s"
+    columns = ", ".join(f"p.{field}" for field in PERSON_FIELDS)
+    query = (
+        f"SELECT DISTINCT {columns} FROM people p "  # noqa: S608 -- fixed columns and driver placeholders
+        "JOIN event_people ep ON ep.person_id = p.id "
+        "JOIN events e ON e.id = ep.event_id "
+        f"WHERE e.conference_id = {placeholder} AND ep.event_role IN ({placeholder}, {placeholder}) "
+        "ORDER BY p.id"
+    )  # noqa: S608 -- fixed columns and driver placeholders
+    with _cursor(**options, detail=True) as cursor:
+        cursor.execute(query, (conference_id, "speaker", "moderator"))
+        return [dict(zip(PERSON_FIELDS, row, strict=True)) for row in cursor.fetchall()]

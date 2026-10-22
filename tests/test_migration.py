@@ -30,6 +30,7 @@ from pretalx.submission.models import CfP, SubmissionType, Track
 
 from pretalx_frab_migration import migration, views
 from pretalx_frab_migration.database import fetch_conference
+from pretalx_frab_migration.import_state import IMPORT_KEY, SOURCE_KEY
 from pretalx_frab_migration.migration import (
     conference_boolean,
     conference_date,
@@ -211,6 +212,10 @@ def test_duplicate_slug_does_not_update_an_event(
     admin_client, settings_url, migration_database, migration_post
 ):
     assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        for imported_event in Event.objects.all():
+            imported_event.settings.delete(IMPORT_KEY)
+            imported_event.settings.delete(SOURCE_KEY)
     update_source(migration_database, title="Changed source title")
     response = admin_client.post(settings_url, migration_post)
     assert response.status_code == 200
@@ -617,6 +622,10 @@ def test_selection_detects_slug_conflicts_and_blocks_migration(
     other_organiser,
 ):
     assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        for imported_event in Event.objects.all():
+            imported_event.settings.delete(IMPORT_KEY)
+            imported_event.settings.delete(SOURCE_KEY)
     if other_organiser:
         with scopes_disabled():
             other = Organiser.objects.create(name="Other", slug="other")
@@ -658,6 +667,10 @@ def test_selecting_a_free_conference_clears_the_conflict(
     admin_client, settings_url, migration_database, migration_post
 ):
     assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        for imported_event in Event.objects.all():
+            imported_event.settings.delete(IMPORT_KEY)
+            imported_event.settings.delete(SOURCE_KEY)
     response = admin_client.post(settings_url, {**migration_post, "action": "select"})
     assert response.context["conference_form"].slug_error
     with closing(sqlite3.connect(migration_database)) as connection:
@@ -705,13 +718,18 @@ def test_conflict_during_creation_uses_the_same_message(
         .has_attr("disabled")
     )
     with scopes_disabled():
-        assert Event.objects.count() == 1
+        assert Event.objects.count() == 0
+        assert not Event.objects.filter(_settings_objects__key=SOURCE_KEY).exists()
 
 
 def test_manual_slug_can_be_checked_and_corrected_without_losing_other_values(
     admin_client, settings_url, migration_database, migration_post
 ):
     assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        for imported_event in Event.objects.all():
+            imported_event.settings.delete(IMPORT_KEY)
+            imported_event.settings.delete(SOURCE_KEY)
     update_source(migration_database, acronym=None, email=None)
     data = {
         **migration_post,

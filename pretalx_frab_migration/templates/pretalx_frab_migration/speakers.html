@@ -1,0 +1,46 @@
+{% load i18n %}
+<h3>{% translate "Speakers" %}</h3>
+{% if speaker_form.mapping.event %}
+    <p>{% translate "Update speakers in" %}: {{ speaker_form.mapping.event.name }}</p>
+{% endif %}
+<p>{% blocktranslate with count=speaker_form.entries|length %}Source speakers: {{ count }}.{% endblocktranslate %}</p>
+<input type="hidden" name="speakers_preview" value="{{ speakers_preview }}">
+{% for entry in speaker_form.entries %}
+    <details class="mb-2">
+        <summary>{{ entry.values.name|default:"—" }} (frab {{ entry.id }}) — {{ entry.action }}</summary>
+        <dl>
+            <dt>{% translate "Email" %}</dt><dd>{{ entry.values.email|default:"—" }}</dd>
+            <dt>{% translate "Biography" %}</dt><dd class="text-break" style="white-space: pre-wrap">{{ entry.values.biography|default:"—" }}</dd>
+            <dt>{% translate "Internal notes" %}</dt><dd class="text-break" style="white-space: pre-wrap">{{ entry.values.internal_notes|default:"—" }}</dd>
+            {% if entry.account %}
+                <dt>{% translate "Existing user" %}</dt><dd>{{ entry.account.name }} ({{ entry.account.email }})</dd>
+            {% endif %}
+            {% if entry.profile %}
+                <dt>{% translate "Event profile" %}</dt><dd>{{ entry.profile.code }} — {{ entry.profile.get_display_name }}</dd>
+            {% endif %}
+            {% if entry.url %}
+                <dt>{% translate "frab source URL" %}</dt><dd><a href="{{ entry.url }}" target="_blank" rel="noopener noreferrer">{{ entry.url }}</a></dd>
+            {% endif %}
+        </dl>
+        {% for note in entry.notes %}<p>{{ note }}</p>{% endfor %}
+    </details>
+{% empty %}
+    <p>{% translate "No speakers or moderators were found in this conference." %}</p>
+{% endfor %}
+{% for group in speaker_form.groups %}
+    {% if group.details %}
+        <h4>{{ group.primary.values.name }}</h4>
+        <table class="table table-sm">
+            <thead><tr><th>{% translate "Field" %}</th><th>{% translate "Current value" %}</th><th>{% translate "Source value" %}</th></tr></thead>
+            <tbody>
+                {% for detail in group.details %}
+                    <tr><td>{{ detail.field }}</td><td class="text-break" style="white-space: pre-wrap">{{ detail.current }}</td><td class="text-break" style="white-space: pre-wrap">{{ detail.source }}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+{% endfor %}
+{{ speaker_form }}
+{% if speaker_form.entries %}
+    <button type="submit" name="action" value="review" class="btn btn-outline-primary" formnovalidate>{% translate "Update preview" %}</button>
+{% endif %}

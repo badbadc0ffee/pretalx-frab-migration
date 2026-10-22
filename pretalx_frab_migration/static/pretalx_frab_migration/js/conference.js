@@ -10,3 +10,10 @@ if (conferenceForm) {
         })
     }
 }
+
+const existingEvent = conferenceForm?.elements.existing_event
+if (existingEvent) {
+    existingEvent.addEventListener("change", () => {
+        conferenceForm.requestSubmit(conferenceForm.querySelector("[data-check-slug]"))
+    })
+}

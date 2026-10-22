@@ -27,8 +27,11 @@
                 {% csrf_token %}
                 {{ conference_form }}
                 <p>
-                    {% translate "Migrate creates a public event with its session languages and CfP for this organiser. It also imports tracks and session types if their migration is enabled. It does not import talks or speakers." %}
+                    {% translate "Migrate creates a public event with its session languages and CfP for this organiser. It also imports tracks and session types if their migration is enabled. It also imports speakers. It does not import talks." %}
                 </p>
+                {% if speaker_form %}
+                    {% include "pretalx_frab_migration/speakers.html" %}
+                {% endif %}
                 <button
                     type="submit"
                     name="action"
