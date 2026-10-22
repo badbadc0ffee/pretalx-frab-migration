@@ -1,12 +1,10 @@
-from django.urls import re_path
-
-from pretalx.event.models.event import SLUG_REGEX
+from django.urls import path
 
 from .views import FrabMigrationSettingsView
 
 urlpatterns = [
-    re_path(
-        rf"^orga/event/(?P<event>{SLUG_REGEX})/settings/p/pretalx_frab_migration/$",
+    path(
+        "orga/organiser/<slug:organiser>/p/pretalx_frab_migration/",
         FrabMigrationSettingsView.as_view(),
         name="settings",
     )

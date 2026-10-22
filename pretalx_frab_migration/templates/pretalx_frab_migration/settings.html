@@ -1,10 +1,12 @@
 {% extends "orga/base.html" %}
 {% load i18n %}
 
-{% block extra_title %}frab-migration Settings ::
+{% block extra_title %}{% translate "Settings" %} :: {{ request.organiser.name }} ::
 {% endblock extra_title %}
 
 {% block content %}
-    <h2 class="page-heading">frab-migration Settings</h2>
+    <h2 class="page-heading">{% translate "Settings" %}</h2>
+    <p>{% translate "Organiser" %}: {{ request.organiser.name }}</p>
+    <p>{% translate "These settings apply to the full pretalx installation." %}</p>
     {% include "orga/includes/base_form.html" %}
 {% endblock content %}

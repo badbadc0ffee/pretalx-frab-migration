@@ -20,7 +20,38 @@ Afterwards, run ``migrate`` and ``rebuild`` and restart your pretalx services,
 just like after any pretalx update (see `performing updates`_ in the
 administrator documentation).
 
-You can then enable the plugin under "Settings → Plugins" in your event settings.
+Global settings
+---------------
+
+Sign in as an instance administrator. Select an organiser. Select "frab Migration"
+in the navigation menu. You can also open
+``/orga/organiser/<organiser-slug>/p/pretalx_frab_migration/``.
+
+The page shows the selected organiser. This organiser is the target for future
+imports. The link is not shown on global pages or event pages.
+
+Enter the base URL of the frab system. Use HTTP or HTTPS. You can leave the field
+empty until you configure the connection.
+
+Select the database type and enter the access settings:
+
+* SQLite: Enter the full database file path on the pretalx server. The plugin
+  clears the saved host, port, user, and password when you save SQLite settings.
+* MySQL or PostgreSQL: Enter the database name. Enter the host and user if the
+  database does not use the local defaults. The host can also be a socket path.
+  Enter a port, or leave it empty to use the default port (MySQL: 3306;
+  PostgreSQL: 5432).
+
+Enter a database password if necessary. The form does not show the saved
+password. Leave the field empty to keep it. Enter a new password to replace it.
+To remove all database settings, select "Not configured" and save the form.
+You can then enter new settings without a password.
+
+Saving these settings does not test the connection or import data.
+
+The plugin stores these settings for the full pretalx installation. Only instance
+administrators can read or change them. The plugin does not need activation for
+an event.
 
 Development setup
 -----------------
@@ -33,8 +64,8 @@ Development setup
 
 4. Run ``pip install -e .`` within this directory to register this application with pretalx's plugin registry.
 
-5. Restart your local pretalx server. This plugin should show up in the plugin list shown on startup in the console.
-   You can now use the plugin from this repository for your events by enabling it in the 'plugins' tab in the settings.
+5. Restart your local pretalx server. Open the global settings page as an instance
+   administrator.
 
 Development commands
 ~~~~~~~~~~~~~~~~~~~~

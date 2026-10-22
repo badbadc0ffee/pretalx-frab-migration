@@ -12,12 +12,9 @@ class PluginApp(AppConfig):
         name = gettext_lazy("frab-migration")
         author = "Florian Mösch"
         description = gettext_lazy("Import conferences from frab into pretalx.")
-        visible = True
+        visible = False
         version = __version__
         category = "INTEGRATION"
-        settings_links = [
-            (gettext_lazy("Settings"), "plugins:pretalx_frab_migration:settings", {})
-        ]
 
     def ready(self):
         from . import signals  # noqa: PLC0415, F401

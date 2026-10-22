@@ -2,10 +2,11 @@ import datetime as dt
 
 import pytest
 from django.core import management
+from django.core.cache import caches
+from django.urls import reverse
 from django_scopes import scopes_disabled
 
 from pretalx.event.domain.event import initialise_event
-from pretalx.event.domain.plugins import enable_plugin
 from pretalx.event.models import Event, Organiser, Team
 from pretalx.person.enums import EmailVerificationState
 from pretalx.person.models import User
@@ -14,6 +15,29 @@ from pretalx.person.models import User
 @pytest.fixture(scope="session", autouse=True)
 def collect_static(request):
     management.call_command("collectstatic", "--noinput", "--clear")
+
+
+@pytest.fixture(autouse=True)
+def clear_caches():
+    for cache in caches.all():
+        cache.clear()
+
+
+@pytest.fixture
+def admin_user():
+    return User.objects.create_user(
+        password="adminpassw0rd",
+        email="admin@example.org",
+        name="Admin User",
+        is_administrator=True,
+        email_verification_state=EmailVerificationState.VERIFIED,
+    )
+
+
+@pytest.fixture
+def admin_client(admin_user, client):
+    client.force_login(admin_user)
+    return client
 
 
 @pytest.fixture
@@ -47,8 +71,6 @@ def event(organiser):
             organiser=organiser,
         )
         initialise_event(event)
-        enable_plugin(event, "pretalx_frab_migration")
-        event.save()
         for team in organiser.teams.all():
             team.limit_events.add(event)
     return event
@@ -98,3 +120,10 @@ def orga_client(orga_user, client):
 def review_client(review_user, client):
     client.force_login(review_user)
     return client
+
+
+@pytest.fixture
+def settings_url(organiser):
+    return reverse(
+        "plugins:pretalx_frab_migration:settings", kwargs={"organiser": organiser.slug}
+    )
