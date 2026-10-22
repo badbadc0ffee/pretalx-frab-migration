@@ -16,6 +16,7 @@ from django.test import Client
 from django.urls import reverse
 from django_scopes import scopes_disabled
 
+from pretalx.common.language import LANGUAGE_NAMES
 from pretalx.common.models import ActivityLog
 from pretalx.common.models.settings import GlobalSettings
 from pretalx.common.ui import _relative_luminance
@@ -1374,3 +1375,95 @@ def test_child_session_types_use_own_names_and_count_with_inherited_slot_duratio
         ]
         assert event.cfp.default_type == types[0]
     assert migration_database.read_bytes() == original
+
+
+def set_source_languages(path, codes):
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executemany(
+            "INSERT INTO languages (code, attachable_id, attachable_type) VALUES (?, 42, 'Conference')",
+            ((code,) for code in codes),
+        )
+        connection.commit()
+
+
+@pytest.mark.parametrize(
+    ("codes", "expected"),
+    (
+        ([" DE ", "en", "de"], ["de", "en"]),
+        (["PT_BR", "pt-br"], ["pt-br"]),
+        (["zh_Hans"], ["zh-hans"]),
+        ([], ["en"]),
+    ),
+)
+def test_conference_languages_are_available_for_submissions(
+    admin_client, settings_url, migration_post, migration_database, codes, expected
+):
+    set_source_languages(migration_database, codes)
+    original = migration_database.read_bytes()
+    response = admin_client.post(settings_url, migration_post)
+    assert response.status_code == 302
+    assert response.url == settings_url
+    with scopes_disabled():
+        event = Event.objects.get()
+        assert event.content_locales == expected
+        assert event.locale == settings.LANGUAGE_CODE
+        assert event.locales == [settings.LANGUAGE_CODE]
+        assert [code for code, _ in event.named_content_locales] == expected
+        form = InfoForm(event=event)
+        if len(expected) > 1:
+            assert (
+                list(form.fields["content_locale"].choices)
+                == event.named_content_locales
+            )
+            assert form.fields["content_locale"].required
+        else:
+            assert "content_locale" not in form.fields
+            assert form.default_values["content_locale"] == expected[0]
+    assert migration_database.read_bytes() == original
+
+
+def test_languages_without_a_translated_interface_can_be_imported(
+    admin_client, settings_url, migration_post, migration_database
+):
+    code = next(code for code in LANGUAGE_NAMES if code not in dict(settings.LANGUAGES))
+    set_source_languages(migration_database, [code])
+    assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        event = Event.objects.get()
+        assert event.content_locales == [code]
+        assert event.named_content_locales
+        assert event.locales == [settings.LANGUAGE_CODE]
+
+
+def test_empty_language_list_uses_frab_english_default(
+    admin_client, settings_url, migration_post, settings
+):
+    settings.LANGUAGE_CODE = "de"
+    assert admin_client.post(settings_url, migration_post).status_code == 302
+    with scopes_disabled():
+        event = Event.objects.get()
+        assert event.content_locales == ["en"]
+        assert event.locale == "de"
+        assert event.locales == ["de"]
+
+
+@pytest.mark.parametrize("code", (None, "", " ", "unknown-code", "en;de"))
+def test_invalid_language_rolls_back_the_complete_migration(
+    admin_client, settings_url, migration_post, frab_tracks, frab_cfp, organiser, code
+):
+    set_source_languages(frab_tracks, ["de", code])
+    original = frab_tracks.read_bytes()
+    with scopes_disabled():
+        team_count = organiser.teams.count()
+    response = admin_client.post(settings_url, migration_post)
+    assert response.status_code == 200
+    assert "content_locales" in str(
+        response.context["conference_form"].non_field_errors()
+    )
+    with scopes_disabled():
+        assert not Event.objects.exists()
+        assert not CfP.objects.exists()
+        assert not Track.objects.exists()
+        assert not SubmissionType.objects.exists()
+        assert organiser.teams.count() == team_count
+    assert frab_tracks.read_bytes() == original

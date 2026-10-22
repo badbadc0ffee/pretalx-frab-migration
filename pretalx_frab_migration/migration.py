@@ -145,6 +145,20 @@ def track_color(value):
     ]
 
 
+def migrate_languages(event, languages):
+    choices = event.available_content_locales
+    canonical_codes = {code.lower(): code for code, _ in choices}
+    codes = [(code or "").strip().replace("_", "-").lower() for code in languages] or [
+        "en"
+    ]
+    codes = list(dict.fromkeys(canonical_codes.get(code, code) for code in codes))
+    try:
+        event.content_locales = forms.MultipleChoiceField(choices=choices).clean(codes)
+    except ValidationError as exc:
+        raise ValidationError({"content_locales": exc.messages}) from exc
+    event.save(update_fields=["content_locales"])
+
+
 def conference_submission_types(conference):
     return list(
         dict.fromkeys(
@@ -327,4 +341,5 @@ def migrate_conference(
             migrate_tracks(event, conference["tracks"])
         if import_submission_types:
             migrate_submission_types(event, conference)
+        migrate_languages(event, conference["languages"])
     return event

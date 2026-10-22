@@ -174,7 +174,10 @@ def test_server_selected_conference_and_tracks_use_bound_parameters(
     driver = pymysql if backend == "mysql" else psycopg
     connection = Mock()
     cursor = connection.cursor.return_value
-    cursor.fetchall.return_value = [(17, "Example track", "fefd7f")]
+    cursor.fetchall.side_effect = [
+        [(17, "Example track", "fefd7f")],
+        [("de",), ("en",)],
+    ]
     cursor.fetchone.side_effect = [
         (
             42,
@@ -197,7 +200,7 @@ def test_server_selected_conference_and_tracks_use_bound_parameters(
     ]
     monkeypatch.setattr(driver, "connect", Mock(return_value=connection))
     row = database.fetch_conference(42, backend=backend, name="frab")
-    query, parameters = cursor.execute.call_args_list[-3].args
+    query, parameters = cursor.execute.call_args_list[-4].args
     assert query.endswith("WHERE id = %s")
     assert parameters == (42,)
     assert "feedback_token" not in query
@@ -206,13 +209,20 @@ def test_server_selected_conference_and_tracks_use_bound_parameters(
     assert row["allowed_event_types"] == "lecture;workshop"
     assert row["timeslot_duration"] == 15
     assert row["default_timeslots"] == 3
-    query, parameters = cursor.execute.call_args.args
+    query, parameters = cursor.execute.call_args_list[-2].args
     assert (
         query
         == "SELECT id, name, color FROM tracks WHERE conference_id = %s ORDER BY name, id"
     )
     assert parameters == (42,)
     assert row["tracks"] == [{"id": 17, "name": "Example track", "color": "fefd7f"}]
+    query, parameters = cursor.execute.call_args.args
+    assert query == (
+        "SELECT code FROM languages WHERE attachable_id = %s "
+        "AND attachable_type = %s ORDER BY id"
+    )
+    assert parameters == (42, "Conference")
+    assert row["languages"] == ["de", "en"]
     cursor.close.assert_called_once()
     connection.close.assert_called_once()
 
@@ -229,7 +239,10 @@ def test_server_cfp_lookup_uses_bound_parameters(monkeypatch, backend):
     driver = pymysql if backend == "mysql" else psycopg
     connection = Mock()
     cursor = connection.cursor.return_value
-    cursor.fetchall.return_value = [(17, "Example track", "fefd7f")]
+    cursor.fetchall.side_effect = [
+        [(17, "Example track", "fefd7f")],
+        [("de",), ("en",)],
+    ]
     cursor.fetchone.side_effect = [
         (
             42,
@@ -257,7 +270,7 @@ def test_server_cfp_lookup_uses_bound_parameters(monkeypatch, backend):
     assert row["email"] == "cfp@example.org"
     assert row["cfp"]["welcome_text"] == "Welcome"
     assert row["cfp"]["start_date"] == "2020-01-01"
-    query, parameters = cursor.execute.call_args_list[-2].args
+    query, parameters = cursor.execute.call_args_list[-3].args
     assert query == (
         "SELECT start_date, end_date, hard_deadline, welcome_text, contact_email "
         "FROM call_for_participations "
@@ -284,3 +297,33 @@ def test_child_conference_does_not_use_its_parents_cfp_email(migration_database)
 
     assert row["email"] is None
     assert row["cfp"] is None
+
+
+@pytest.mark.parametrize(
+    ("conference_id", "expected"), ((42, ["de", "en"]), (7, ["fr"]))
+)
+def test_languages_are_selected_by_conference_and_attachment_type(
+    migration_database, conference_id, expected
+):
+    with closing(sqlite3.connect(migration_database)) as connection:
+        connection.execute(
+            "INSERT INTO conferences (id, title, acronym, parent_id) VALUES (7, 'Child', 'CHILD', 42)"
+        )
+        connection.executemany(
+            "INSERT INTO languages (id, code, attachable_id, attachable_type) VALUES (?, ?, ?, ?)",
+            (
+                (20, "en", 42, "Conference"),
+                (10, "de", 42, "Conference"),
+                (30, "fr", 7, "Conference"),
+                (40, "es", 42, "Person"),
+                (50, "pt", 42, "Event"),
+                (60, "it", None, "Conference"),
+            ),
+        )
+        connection.commit()
+    original = migration_database.read_bytes()
+    row = database.fetch_conference(
+        conference_id, backend="sqlite3", name=str(migration_database)
+    )
+    assert row["languages"] == expected
+    assert migration_database.read_bytes() == original

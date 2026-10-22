@@ -27,7 +27,7 @@
                 {% csrf_token %}
                 {{ conference_form }}
                 <p>
-                    {% translate "Migrate creates a public event and its CfP for this organiser. It also imports tracks and session types if their migration is enabled. It does not import talks or speakers." %}
+                    {% translate "Migrate creates a public event with its session languages and CfP for this organiser. It also imports tracks and session types if their migration is enabled. It does not import talks or speakers." %}
                 </p>
                 <button
                     type="submit"

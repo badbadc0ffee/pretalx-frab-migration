@@ -172,6 +172,11 @@ def migration_database(tmp_path):
             )
         """)
         connection.execute("""
+            CREATE TABLE languages (
+                id INTEGER PRIMARY KEY, code TEXT, attachable_id INTEGER, attachable_type TEXT
+            )
+        """)
+        connection.execute("""
             INSERT INTO conferences VALUES (
                 42, 'Alpha & Friends', 'AF_2026', 'Berlin',
                 '2026-10-21 23:30:00', '2026-10-24 21:00:00',

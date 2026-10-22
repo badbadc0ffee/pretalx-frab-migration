@@ -94,7 +94,7 @@ def _cursor(*, backend, name, host="", port=None, user="", password="", detail=F
             _(
                 "The database is reachable, but the selected conference could not be read. "
                 "Check that this is a frab database and that the database user can read "
-                "the conferences, call_for_participations, and tracks tables."
+                "the conferences, call_for_participations, tracks, and languages tables."
             )
             if detail
             else _(
@@ -139,7 +139,7 @@ CFP_FIELDS = (
 
 
 def fetch_conference(conference_id, **options):
-    """Read one conference with inherited values, its CfP, and its tracks."""
+    """Read one conference with inherited values, its CfP, tracks, and languages."""
     placeholder = "?" if options["backend"] == "sqlite3" else "%s"
     # Only constant column names and the driver's placeholder enter the SQL text.
     query = f"SELECT {', '.join(CONFERENCE_FIELDS)} FROM conferences WHERE id = {placeholder}"  # noqa: S608
@@ -178,4 +178,7 @@ def fetch_conference(conference_id, **options):
             dict(zip(("id", "name", "color"), row, strict=True))
             for row in cursor.fetchall()
         ]
+        language_query = f"SELECT code FROM languages WHERE attachable_id = {placeholder} AND attachable_type = {placeholder} ORDER BY id"  # noqa: S608 -- driver placeholders only
+        cursor.execute(language_query, (conference["id"], "Conference"))
+        conference["languages"] = [row[0] for row in cursor.fetchall()]
         return conference
