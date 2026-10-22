@@ -1,9 +1,15 @@
 from django import forms
+from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 from django.utils.translation import gettext_lazy as _
+from django_scopes import scopes_disabled
 
 from pretalx.common.forms.widgets import PasswordInput
+from pretalx.event.models import Event
+from pretalx.event.validators.event import validate_event_slug_unique
 from pretalx.orga.forms.admin import GlobalSettingsForm
+
+from .migration import conference_slug, missing_event_fields
 
 
 class FrabMigrationSettingsForm(GlobalSettingsForm):
@@ -99,11 +105,56 @@ class FrabMigrationSettingsForm(GlobalSettingsForm):
 
 
 class FrabConferenceForm(forms.Form):
+    connection = forms.CharField(widget=forms.HiddenInput)
     conference = forms.ChoiceField(label=_("Conference"))
 
-    def __init__(self, *args, conferences, **kwargs):
+    def __init__(self, *args, conferences, conference=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["conference"].choices = [("", _("Select a conference"))] + [
             (str(conference_id), f"{title} ({acronym})")
             for conference_id, title, acronym in conferences
         ]
+        self.missing_fields = missing_event_fields(conference) if conference else []
+        for name in self.missing_fields:
+            model_field = Event._meta.get_field(name)
+            if name == "name":
+                field = forms.CharField(max_length=model_field.max_length)
+            elif name in ("date_from", "date_to"):
+                field = forms.DateField(
+                    widget=forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d")
+                )
+            else:
+                field = model_field.formfield()
+            field.label = model_field.verbose_name
+            field.help_text = _(
+                "frab has no value for this field. Enter a value for the new event."
+            )
+            field.required = True
+            self.fields[name] = field
+
+        self.event_slug = ""
+        self.slug_error = None
+        if conference:
+            value = conference["acronym"]
+            if "slug" in self.missing_fields:
+                values = self.data if self.is_bound else self.initial
+                value = (values.get("slug") or "").strip()
+            self.event_slug = conference_slug(value)
+            self.check_slug()
+
+    def check_slug(self):
+        self.slug_error = None
+        with scopes_disabled():
+            try:
+                validate_event_slug_unique(self.event_slug)
+            except ValidationError:
+                self.slug_error = _(
+                    "This short name is already taken. Please choose another one."
+                )
+        return self.slug_error
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if self.slug_error:
+            self.add_error("slug" if "slug" in self.fields else None, self.slug_error)
+        return cleaned_data

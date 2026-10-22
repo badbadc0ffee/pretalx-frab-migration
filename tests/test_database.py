@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from unittest.mock import Mock
 
 import psycopg
@@ -133,3 +134,113 @@ def test_query_errors_close_the_connection(monkeypatch, backend):
     assert "private query details" not in str(exc.value)
     cursor.close.assert_called_once()
     connection.close.assert_called_once()
+
+
+def test_selected_conference_resolves_parent_values(migration_database):
+    with closing(sqlite3.connect(migration_database)) as connection:
+        connection.execute("""
+            INSERT INTO conferences (id, title, acronym, timezone, start_date, end_date, parent_id)
+            VALUES (7, 'Child', 'CHILD', 'UTC', '2020-01-01', '2020-01-01', 42)
+        """)
+        connection.commit()
+    original = migration_database.read_bytes()
+    row = database.fetch_conference(7, backend="sqlite3", name=str(migration_database))
+    assert row["id"] == 7
+    assert row["title"] == "Child"
+    assert row["timezone"] == "Berlin"
+    assert row["start_date"] == "2026-10-21 23:30:00"
+    assert row["end_date"] == "2026-10-24 21:00:00"
+    assert "feedback_token" not in row
+    assert migration_database.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("parent_id", "message"), ((42, "parent cycle"), (999, "no longer exists"))
+)
+def test_invalid_parent_stops_the_read(migration_database, parent_id, message):
+    with closing(sqlite3.connect(migration_database)) as connection:
+        connection.execute(
+            "UPDATE conferences SET parent_id = ? WHERE id = 42", (parent_id,)
+        )
+        connection.commit()
+    with pytest.raises(FrabDatabaseError, match=message):
+        database.fetch_conference(42, backend="sqlite3", name=str(migration_database))
+
+
+@pytest.mark.parametrize("backend", ("mysql", "postgresql"))
+def test_server_selected_conference_uses_bound_parameters(monkeypatch, backend):
+    driver = pymysql if backend == "mysql" else psycopg
+    connection = Mock()
+    cursor = connection.cursor.return_value
+    cursor.fetchone.return_value = (
+        42,
+        "Title",
+        "CONF",
+        "UTC",
+        None,
+        None,
+        "orga@example.org",
+        None,
+        0,
+        None,
+        None,
+        None,
+    )
+    monkeypatch.setattr(driver, "connect", Mock(return_value=connection))
+    row = database.fetch_conference(42, backend=backend, name="frab")
+    query, parameters = cursor.execute.call_args.args
+    assert query.endswith("WHERE id = %s")
+    assert parameters == (42,)
+    assert "feedback_token" not in query
+    assert "schedule_public" not in query
+    assert row["id"] == 42
+    cursor.close.assert_called_once()
+    connection.close.assert_called_once()
+
+
+def test_selected_conference_does_not_interpolate_sql(migration_database):
+    with pytest.raises(FrabDatabaseError, match="no longer exists"):
+        database.fetch_conference(
+            "42 OR 1=1", backend="sqlite3", name=str(migration_database)
+        )
+
+
+@pytest.mark.parametrize("backend", ("mysql", "postgresql"))
+def test_server_cfp_email_lookup_uses_bound_parameters(monkeypatch, backend):
+    driver = pymysql if backend == "mysql" else psycopg
+    connection = Mock()
+    cursor = connection.cursor.return_value
+    cursor.fetchone.side_effect = [
+        (42, "Title", "CONF", "UTC", None, None, None, None, 0, None, None, None),
+        ("cfp@example.org",),
+    ]
+    monkeypatch.setattr(driver, "connect", Mock(return_value=connection))
+
+    row = database.fetch_conference(42, backend=backend, name="frab")
+
+    assert row["email"] == "cfp@example.org"
+    query, parameters = cursor.execute.call_args.args
+    assert query == (
+        "SELECT contact_email FROM call_for_participations "
+        "WHERE conference_id = %s ORDER BY id LIMIT 1"
+    )
+    assert parameters == (42,)
+    cursor.close.assert_called_once()
+    connection.close.assert_called_once()
+
+
+def test_child_conference_does_not_use_its_parents_cfp_email(migration_database):
+    with closing(sqlite3.connect(migration_database)) as connection:
+        connection.execute("""
+            INSERT INTO conferences (id, title, acronym, parent_id)
+            VALUES (7, 'Child', 'CHILD', 42)
+        """)
+        connection.execute("""
+            INSERT INTO call_for_participations (conference_id, contact_email)
+            VALUES (42, 'parent-cfp@example.org')
+        """)
+        connection.commit()
+
+    row = database.fetch_conference(7, backend="sqlite3", name=str(migration_database))
+
+    assert row["email"] is None

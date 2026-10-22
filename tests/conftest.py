@@ -144,3 +144,34 @@ def frab_database(tmp_path):
         )
         connection.commit()
     return path
+
+
+@pytest.fixture
+def migration_database(tmp_path):
+    path = tmp_path / "migration.sqlite3"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("""
+            CREATE TABLE conferences (
+                id INTEGER PRIMARY KEY, title TEXT, acronym TEXT, timezone TEXT,
+                start_date DATETIME, end_date DATETIME, email TEXT, color TEXT,
+                feedback_enabled BOOLEAN,
+                schedule_html_intro TEXT, parent_id INTEGER,
+                allowed_event_types TEXT, feedback_token TEXT, program_export_base_url TEXT
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE call_for_participations (
+                id INTEGER PRIMARY KEY, conference_id INTEGER, contact_email TEXT
+            )
+        """)
+        connection.execute("""
+            INSERT INTO conferences VALUES (
+                42, 'Alpha & Friends', 'AF_2026', 'Berlin',
+                '2026-10-21 23:30:00', '2026-10-24 21:00:00',
+                'orga@example.org', '12AbEF', 0,
+                '<h2>Welcome</h2><p>Hello <strong>friends</strong>.</p><p><a href="/info">Details</a></p>',
+                NULL, 'lecture;workshop', 'do-not-import-this-token', NULL
+            )
+        """)
+        connection.commit()
+    return path

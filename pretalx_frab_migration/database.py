@@ -1,5 +1,5 @@
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 import psycopg
@@ -62,7 +62,8 @@ def _connect(*, backend, name, host, port, user, password):
     return psycopg.connect(**options)
 
 
-def fetch_conferences(*, backend, name, host="", port=None, user="", password=""):
+@contextmanager
+def _cursor(*, backend, name, host="", port=None, user="", password="", detail=False):
     if backend not in ("sqlite3", "mysql", "postgresql") or not name:
         raise FrabDatabaseError(
             _("Select a database type and enter the database name or file path.")
@@ -87,14 +88,76 @@ def fetch_conferences(*, backend, name, host="", port=None, user="", password=""
         with closing(connection), closing(connection.cursor()) as cursor:
             if backend == "mysql":
                 cursor.execute("START TRANSACTION READ ONLY")
-            cursor.execute(
-                "SELECT id, title, acronym FROM conferences ORDER BY title, id"
-            )
-            return cursor.fetchall()
+            yield cursor
     except DATABASE_ERRORS:
         raise FrabDatabaseError(
             _(
+                "The database is reachable, but the selected conference could not be read. "
+                "Check that this is a frab database and that the database user can read "
+                "the conferences and call_for_participations tables."
+            )
+            if detail
+            else _(
                 "The database is reachable, but the conference list could not be read. "
                 "Check that this is a frab database and that the database user can read its conferences."
             )
         ) from None
+
+
+def fetch_conferences(**options):
+    with _cursor(**options) as cursor:
+        cursor.execute("SELECT id, title, acronym FROM conferences ORDER BY title, id")
+        return cursor.fetchall()
+
+
+CONFERENCE_FIELDS = (
+    "id",
+    "title",
+    "acronym",
+    "timezone",
+    "start_date",
+    "end_date",
+    "email",
+    "color",
+    "feedback_enabled",
+    "schedule_html_intro",
+    "parent_id",
+    "program_export_base_url",
+)
+
+
+def fetch_conference(conference_id, **options):
+    """Read one conference, its inherited dates and timezone, and its fallback email."""
+    placeholder = "?" if options["backend"] == "sqlite3" else "%s"
+    # Only constant column names and the driver's placeholder enter the SQL text.
+    query = f"SELECT {', '.join(CONFERENCE_FIELDS)} FROM conferences WHERE id = {placeholder}"  # noqa: S608
+    with _cursor(**options, detail=True) as cursor:
+
+        def read_row(row_id):
+            cursor.execute(query, (row_id,))
+            row = cursor.fetchone()
+            if row is None:
+                raise FrabDatabaseError(
+                    _("The conference or its parent no longer exists. Connect again.")
+                )
+            return dict(zip(CONFERENCE_FIELDS, row, strict=True))
+
+        conference = read_row(conference_id)
+        parent = conference
+        seen = {conference["id"]}
+        while parent["parent_id"] is not None:
+            if parent["parent_id"] in seen:
+                raise FrabDatabaseError(
+                    _("The conference has a parent cycle. Correct the source data.")
+                )
+            parent = read_row(parent["parent_id"])
+            seen.add(parent["id"])
+        for field in ("timezone", "start_date", "end_date"):
+            conference[field] = parent[field]
+        if not (conference["email"] or "").strip():
+            cfp_query = f"SELECT contact_email FROM call_for_participations WHERE conference_id = {placeholder} ORDER BY id LIMIT 1"  # noqa: S608 -- driver placeholder only
+            cursor.execute(cfp_query, (conference["id"],))
+            cfp = cursor.fetchone()
+            if cfp:
+                conference["email"] = (cfp[0] or "").strip()
+        return conference

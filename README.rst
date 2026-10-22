@@ -27,7 +27,7 @@ Sign in as an instance administrator. Select an organiser. Select "frab Migratio
 in the navigation menu. You can also open
 ``/orga/organiser/<organiser-slug>/p/pretalx_frab_migration/``.
 
-The page shows the selected organiser. This organiser is the target for future
+The page shows the selected organiser. This organiser is the target for
 imports. The link is not shown on global pages or event pages.
 
 Enter the base URL of the frab system. Use HTTP or HTTPS. You can leave the field
@@ -66,11 +66,59 @@ does not start an import.
 
 SQLite uses Python's database driver. MySQL uses PyMySQL. PostgreSQL uses Psycopg.
 The plugin package installs the server database drivers. The database user must
-have permission to read the ``conferences`` table.
+have permission to read the ``conferences`` and ``call_for_participations`` tables.
 
 The plugin stores these settings for the full pretalx installation. Only instance
 administrators can read or change them. The plugin does not need activation for
 an event.
+
+Migrate the event
+~~~~~~~~~~~~~~~~~
+
+Select a conference, then select "Migrate". The plugin creates one event
+under the selected organiser. It opens the event settings after creation.
+Migrate uses the saved database settings. Connect again if these settings change
+or if more than one hour has passed since Connect.
+
+The plugin calls ``pretalx.event.domain.event.create_event``. It passes the name,
+short form, timezone, dates, organiser contact email, colour, feedback setting,
+schedule visibility setting, and landing page text. It converts the HTML
+introduction to Markdown. Links use the configured frab URL as their base.
+The default language comes from the pretalx installation.
+
+The event is public if the frab conference has a public schedule. Otherwise it
+stays private. This sets event visibility. A public schedule still needs a later
+schedule import and release. CfP dates are not imported yet; the initial CfP
+uses pretalx defaults and has no deadline.
+
+Rails timezone names are converted to IANA names. For example, ``Berlin`` becomes
+``Europe/Berlin``. Timestamps without an offset use UTC, as in the default Rails
+configuration. Dates use the conference timezone. A child conference uses its
+parent's dates and timezone. Check the source configuration before migration if
+it stores timestamps in another timezone.
+
+If the conference email is missing, the plugin uses the contact email from that
+conference's CfP. It asks for an email only if both values are missing.
+
+When you select a conference, the plugin checks its short form against all
+pretalx events. If it is already in use, the page shows a message and disables
+Migrate. The plugin also checks again during creation.
+
+When you select a conference, the form adds any missing required values below
+the conference list. Enter the name, short form, timezone, dates, or contact email
+if requested. These values apply to the new event. They do not change frab.
+If JavaScript is disabled, select "Migrate" to load the required fields first.
+
+pretalx validates the event before it saves it. Invalid data stops creation and
+shows an error. Correct form values or source data and try again. An existing
+short form also stops creation. Existing events are not updated.
+
+This step imports only the event. The native creation function adds the required
+pretalx records, such as the default session type and initial schedule. The plugin
+does not yet import frab session types, talks, speakers, rooms, files, or schedules.
+The source ``program_export_base_url`` is copied to the HTML Export URL without
+conditions. The value is copied as stored. A missing value becomes an empty string.
+This also applies to private events. Custom CSS is not imported.
 
 Development setup
 -----------------
