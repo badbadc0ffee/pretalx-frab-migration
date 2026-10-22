@@ -1,4 +1,6 @@
 import datetime as dt
+import sqlite3
+from contextlib import closing
 
 import pytest
 from django.core import management
@@ -127,3 +129,18 @@ def settings_url(organiser):
     return reverse(
         "plugins:pretalx_frab_migration:settings", kwargs={"organiser": organiser.slug}
     )
+
+
+@pytest.fixture
+def frab_database(tmp_path):
+    path = tmp_path / "frab #1.sqlite3"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(
+            "CREATE TABLE conferences (id INTEGER PRIMARY KEY, title TEXT NOT NULL, acronym TEXT NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO conferences (id, title, acronym) VALUES (?, ?, ?)",
+            [(7, "Zeta Conference", "ZC"), (42, "Alpha & Friends", "AF")],
+        )
+        connection.commit()
+    return path

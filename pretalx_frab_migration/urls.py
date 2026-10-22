@@ -1,11 +1,11 @@
 from django.urls import path
 
-from .views import FrabMigrationSettingsView
+from .views import FrabMigrationView
 
 urlpatterns = [
     path(
         "orga/organiser/<slug:organiser>/p/pretalx_frab_migration/",
-        FrabMigrationSettingsView.as_view(),
+        FrabMigrationView.as_view(),
         name="settings",
     )
 ]

@@ -1,12 +1,34 @@
 {% extends "orga/base.html" %}
 {% load i18n %}
 
-{% block extra_title %}{% translate "Settings" %} :: {{ request.organiser.name }} ::
+{% block extra_title %}{% translate "frab Migration" %} :: {{ request.organiser.name }} ::
 {% endblock extra_title %}
 
 {% block content %}
-    <h2 class="page-heading">{% translate "Settings" %}</h2>
+    <h2 class="page-heading">{% translate "frab Migration" %}</h2>
     <p>{% translate "Organiser" %}: {{ request.organiser.name }}</p>
-    <p>{% translate "These settings apply to the full pretalx installation." %}</p>
-    {% include "orga/includes/base_form.html" %}
+    <form method="post">
+        {% csrf_token %}
+        <h3>{% translate "Settings" %}</h3>
+        <p>{% translate "These settings apply to the full pretalx installation." %}</p>
+        {{ form }}
+        {% include "orga/includes/submit_row.html" %}
+        <h3>{% translate "Conferences" %}</h3>
+        <p>{% translate "Connect reads the conferences and saves these settings if the read succeeds." %}</p>
+        <button type="submit" name="action" value="connect" class="btn btn-primary">
+            {% translate "Connect" %}
+        </button>
+    </form>
+    {% if connection_error %}
+        <div class="alert alert-danger mt-3" role="alert">{{ connection_error }}</div>
+    {% elif connected %}
+        <div class="alert alert-success mt-3" role="status">
+            {% if conference_form %}
+                {% translate "Connection successful. Select a conference." %}
+            {% else %}
+                {% translate "Connection successful. This database has no conferences." %}
+            {% endif %}
+        </div>
+        {% if conference_form %}{{ conference_form }}{% endif %}
+    {% endif %}
 {% endblock content %}

@@ -47,7 +47,26 @@ password. Leave the field empty to keep it. Enter a new password to replace it.
 To remove all database settings, select "Not configured" and save the form.
 You can then enter new settings without a password.
 
-Saving these settings does not test the connection or import data.
+Save stores the settings without a connection test.
+
+Connect and select a conference
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Below the settings, select "Connect". The plugin uses the values in the form.
+It reads the conference list and saves the settings if the read succeeds.
+An empty password field uses the saved password.
+
+After a successful connection, select a conference from the dropdown. Each entry
+shows the conference title and acronym. The page shows a message if the database
+has no conferences or if the plugin cannot read the list.
+
+The plugin opens the source database for read access. It closes the connection
+after it reads the list. Connect again to refresh the list. Conference selection
+does not start an import.
+
+SQLite uses Python's database driver. MySQL uses PyMySQL. PostgreSQL uses Psycopg.
+The plugin package installs the server database drivers. The database user must
+have permission to read the ``conferences`` table.
 
 The plugin stores these settings for the full pretalx installation. Only instance
 administrators can read or change them. The plugin does not need activation for

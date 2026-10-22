@@ -96,3 +96,14 @@ class FrabMigrationSettingsForm(GlobalSettingsForm):
                 "frab_migration_db_password", default=""
             )
         return cleaned_data
+
+
+class FrabConferenceForm(forms.Form):
+    conference = forms.ChoiceField(label=_("Conference"))
+
+    def __init__(self, *args, conferences, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["conference"].choices = [("", _("Select a conference"))] + [
+            (str(conference_id), f"{title} ({acronym})")
+            for conference_id, title, acronym in conferences
+        ]
