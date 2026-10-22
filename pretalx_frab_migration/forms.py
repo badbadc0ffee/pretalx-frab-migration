@@ -9,7 +9,11 @@ from pretalx.event.models import Event
 from pretalx.event.validators.event import validate_event_slug_unique
 from pretalx.orga.forms.admin import GlobalSettingsForm
 
-from .migration import conference_slug, missing_event_fields
+from .migration import (
+    conference_slug,
+    conference_submission_types,
+    missing_event_fields,
+)
 
 
 class FrabMigrationSettingsForm(GlobalSettingsForm):
@@ -139,6 +143,16 @@ class FrabConferenceForm(forms.Form):
                 initial=True,
                 help_text=_(
                     'Clear this checkbox to skip all tracks and disable "Use tracks" for the new event.'
+                ),
+            )
+
+        if conference and len(conference_submission_types(conference)) > 1:
+            self.fields["import_submission_types"] = forms.BooleanField(
+                label=_("Migrate session types"),
+                required=False,
+                initial=True,
+                help_text=_(
+                    'Clear this checkbox to keep only the default "Talk" session type and its default duration.'
                 ),
             )
 

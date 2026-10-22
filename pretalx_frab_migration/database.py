@@ -123,6 +123,9 @@ CONFERENCE_FIELDS = (
     "schedule_html_intro",
     "parent_id",
     "program_export_base_url",
+    "allowed_event_types",
+    "timeslot_duration",
+    "default_timeslots",
 )
 
 
@@ -136,7 +139,7 @@ CFP_FIELDS = (
 
 
 def fetch_conference(conference_id, **options):
-    """Read one conference, its inherited dates and timezone, its CfP, and its tracks."""
+    """Read one conference with inherited values, its CfP, and its tracks."""
     placeholder = "?" if options["backend"] == "sqlite3" else "%s"
     # Only constant column names and the driver's placeholder enter the SQL text.
     query = f"SELECT {', '.join(CONFERENCE_FIELDS)} FROM conferences WHERE id = {placeholder}"  # noqa: S608
@@ -161,7 +164,7 @@ def fetch_conference(conference_id, **options):
                 )
             parent = read_row(parent["parent_id"])
             seen.add(parent["id"])
-        for field in ("timezone", "start_date", "end_date"):
+        for field in ("timezone", "start_date", "end_date", "timeslot_duration"):
             conference[field] = parent[field]
         cfp_query = f"SELECT {', '.join(CFP_FIELDS)} FROM call_for_participations WHERE conference_id = {placeholder} ORDER BY id LIMIT 1"  # noqa: S608 -- constant columns and driver placeholder only
         cursor.execute(cfp_query, (conference["id"],))

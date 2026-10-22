@@ -25,7 +25,7 @@ from pretalx.event.models import Event, Organiser
 from pretalx.event.models.event import default_display_settings, default_feature_flags
 from pretalx.mail.models import QueuedMail
 from pretalx.submission.interfaces.forms import InfoForm
-from pretalx.submission.models import Track
+from pretalx.submission.models import CfP, SubmissionType, Track
 
 from pretalx_frab_migration import migration, views
 from pretalx_frab_migration.database import fetch_conference
@@ -71,6 +71,7 @@ def migration_post(admin_client, settings_url, migration_database):
     return {
         "action": "migrate",
         "import_tracks": "on",
+        "import_submission_types": "on",
         "conference": "42",
         "connection": response.context["conference_form"].initial["connection"],
     }
@@ -122,7 +123,8 @@ def test_migrate_creates_the_event_with_native_initialisation(
         assert event.cfp.opening is None
         assert event.cfp.deadline is None
         assert not event.cfp.text
-        assert event.submission_types.count() == 1
+        assert event.submission_types.count() == 2
+        assert event.cfp.default_type.default_duration == 45
         assert event.schedules.count() == 1
         assert event.wip_schedule.version is None
         assert (
@@ -1163,3 +1165,212 @@ def test_unchecked_tracks_are_skipped_and_the_feature_is_disabled(
         assert event.cfp.deadline.astimezone(event.tz).date() == dt.date(2020, 3, 29)
         assert "Submit a talk" in str(event.cfp.text)
     assert frab_tracks.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("source_types", "expected_names", "default_name"),
+    (
+        (
+            "workshop; lecture; panel & Q&A;lecture;Talk;Workshop;djset;DJ Set;lightning_talk;; ",
+            ["Talk", "Workshop", "Panel & Q&A", "DJ Set", "Lightning Talk"],
+            "Talk",
+        ),
+        ("lecture", ["Talk"], "Talk"),
+        ("workshop;Seminar", ["Workshop", "Seminar"], "Workshop"),
+        (None, ["Talk"], "Talk"),
+        ("", ["Talk"], "Talk"),
+        (" ; ; ", ["Talk"], "Talk"),
+    ),
+)
+def test_session_types_use_source_names_durations_and_the_native_default(
+    admin_client,
+    settings_url,
+    migration_database,
+    migration_post,
+    monkeypatch,
+    source_types,
+    expected_names,
+    default_name,
+):
+    update_source(migration_database, allowed_event_types=source_types)
+    original = migration_database.read_bytes()
+    native_defaults = []
+
+    def post_create(event, *, user):
+        native_defaults.append(event.cfp.default_type_id)
+        return event_domain.post_create_event(event, user=user)
+
+    monkeypatch.setattr(migration, "post_create_event", post_create)
+    response = admin_client.post(settings_url, migration_post)
+    assert response.status_code == 302
+    assert response.url == settings_url
+    with scopes_disabled():
+        event = Event.objects.get()
+        types = list(event.submission_types.order_by("pk"))
+        assert [str(item.name) for item in types] == expected_names
+        assert event.cfp.default_type_id == native_defaults[0]
+        assert str(event.cfp.default_type.name) == default_name
+        assert all(item.default_duration == 45 for item in types)
+        assert all(item.deadline is None for item in types)
+        assert all(not item.requires_access_code for item in types)
+        assert all(not item.attendee_signup_required for item in types)
+        form = InfoForm(event=event)
+        if len(types) > 1:
+            assert set(form.fields["submission_type"].queryset) == set(types)
+            assert form.fields["submission_type"].required
+        else:
+            assert "submission_type" not in form.fields
+        assert not event.submissions.exists()
+    assert migration_database.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("source_types", "shown"),
+    (
+        (None, False),
+        ("lecture", False),
+        ("lecture; lecture; ", False),
+        ("lecture;workshop", True),
+    ),
+)
+def test_session_type_checkbox_is_selected_only_for_multiple_source_types(
+    admin_client, settings_url, migration_database, migration_post, source_types, shown
+):
+    update_source(migration_database, allowed_event_types=source_types)
+    data = {
+        key: value
+        for key, value in migration_post.items()
+        if key != "import_submission_types"
+    }
+    response = admin_client.post(settings_url, {**data, "action": "select"})
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.content, "html.parser")
+    checkbox = soup.find("input", attrs={"name": "import_submission_types"})
+    if shown:
+        assert checkbox["type"] == "checkbox"
+        assert checkbox.has_attr("checked")
+        assert not checkbox.has_attr("required")
+    else:
+        assert checkbox is None
+    with scopes_disabled():
+        assert not Event.objects.exists()
+
+
+@pytest.mark.parametrize("selected", (False, True))
+@pytest.mark.parametrize("action", ("check_slug", "migrate"))
+def test_session_type_choice_survives_slug_checks_and_form_errors(
+    admin_client, settings_url, migration_database, migration_post, selected, action
+):
+    update_source(migration_database, acronym=None, email=None)
+    data = {**migration_post, "action": action, "slug": "manual-slug"}
+    if not selected:
+        del data["import_submission_types"]
+    response = admin_client.post(settings_url, data)
+    assert response.status_code == 200
+    checkbox = BeautifulSoup(response.content, "html.parser").find(
+        "input", attrs={"name": "import_submission_types"}
+    )
+    assert checkbox.has_attr("checked") is selected
+    if action == "migrate":
+        assert response.context["conference_form"].has_error("email")
+    with scopes_disabled():
+        assert not Event.objects.exists()
+
+
+@pytest.mark.parametrize("import_tracks", (False, True))
+@pytest.mark.parametrize("import_types", (False, True))
+def test_track_and_session_type_import_options_are_independent(
+    admin_client,
+    settings_url,
+    migration_post,
+    frab_tracks,
+    frab_cfp,
+    import_tracks,
+    import_types,
+):
+    data = migration_post.copy()
+    if not import_tracks:
+        del data["import_tracks"]
+    if not import_types:
+        del data["import_submission_types"]
+        update_source(
+            frab_tracks,
+            allowed_event_types="lecture;" + "x" * 101,
+            timeslot_duration=None,
+            default_timeslots=-1,
+        )
+    original = frab_tracks.read_bytes()
+    response = admin_client.post(settings_url, data)
+    assert response.status_code == 302
+    with scopes_disabled():
+        event = Event.objects.get()
+        assert str(event.cfp.default_type.name) == "Talk"
+        assert event.cfp.default_type.default_duration == (45 if import_types else 30)
+        assert event.submission_types.count() == (2 if import_types else 1)
+        assert event.tracks.count() == (3 if import_tracks else 0)
+        assert event.feature_flags["use_tracks"] is import_tracks
+        assert "Submit a talk" in str(event.cfp.text)
+    assert frab_tracks.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("allowed_event_types", "lecture;" + "x" * 101),
+        ("timeslot_duration", None),
+        ("timeslot_duration", 0),
+        ("timeslot_duration", "bad"),
+        ("default_timeslots", None),
+        ("default_timeslots", -1),
+        ("default_timeslots", "1.5"),
+        ("default_timeslots", 10**18),
+    ),
+)
+def test_invalid_session_types_roll_back_the_complete_import(
+    admin_client,
+    settings_url,
+    migration_post,
+    frab_tracks,
+    frab_cfp,
+    organiser,
+    field,
+    value,
+):
+    update_source(frab_tracks, **{field: value})
+    with scopes_disabled():
+        team_count = organiser.teams.count()
+    response = admin_client.post(settings_url, migration_post)
+    assert response.status_code == 200
+    assert response.context["conference_form"].non_field_errors()
+    with scopes_disabled():
+        assert not Event.objects.exists()
+        assert not CfP.objects.exists()
+        assert not Track.objects.exists()
+        assert not SubmissionType.objects.exists()
+        assert organiser.teams.count() == team_count
+
+
+def test_child_session_types_use_own_names_and_count_with_inherited_slot_duration(
+    admin_client, settings_url, migration_database, migration_post
+):
+    with closing(sqlite3.connect(migration_database)) as connection:
+        connection.execute(
+            "INSERT INTO conferences "
+            "(id, title, acronym, email, feedback_enabled, parent_id, "
+            "allowed_event_types, default_timeslots, timeslot_duration) "
+            "VALUES (7, 'Child', 'CHILD', 'child@example.org', 0, 42, 'lecture;Tutorial', 4, 99)"
+        )
+        connection.commit()
+    original = migration_database.read_bytes()
+    response = admin_client.post(settings_url, {**migration_post, "conference": "7"})
+    assert response.status_code == 302
+    with scopes_disabled():
+        event = Event.objects.get()
+        assert event.slug == "child"
+        types = list(event.submission_types.order_by("pk"))
+        assert [(str(item.name), item.default_duration) for item in types] == [
+            ("Talk", 60),
+            ("Tutorial", 60),
+        ]
+        assert event.cfp.default_type == types[0]
+    assert migration_database.read_bytes() == original

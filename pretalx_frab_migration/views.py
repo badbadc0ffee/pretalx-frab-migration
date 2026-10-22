@@ -132,6 +132,7 @@ class FrabMigrationView(PermissionRequired, FormView):
                                 for key in (
                                     *missing_event_fields(conference),
                                     "import_tracks",
+                                    "import_submission_types",
                                 )
                             }
                         )
@@ -153,6 +154,9 @@ class FrabMigrationView(PermissionRequired, FormView):
                                 source_url=source_url,
                                 import_tracks=conference_form.cleaned_data.get(
                                     "import_tracks", True
+                                ),
+                                import_submission_types=conference_form.cleaned_data.get(
+                                    "import_submission_types", True
                                 ),
                                 overrides={
                                     key: conference_form.cleaned_data[key]

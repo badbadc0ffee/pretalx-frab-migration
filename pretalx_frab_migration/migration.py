@@ -20,7 +20,7 @@ from pretalx.event.models.event import (
     default_display_settings,
     default_feature_flags,
 )
-from pretalx.submission.models import Track
+from pretalx.submission.models import SubmissionType, Track
 
 from .timezones import RAILS_TIMEZONES
 
@@ -145,6 +145,59 @@ def track_color(value):
     ]
 
 
+def conference_submission_types(conference):
+    return list(
+        dict.fromkeys(
+            name.strip()
+            for name in (conference["allowed_event_types"] or "").split(";")
+            if name.strip()
+        )
+    )
+
+
+def migrate_submission_types(event, conference):
+    duration = 1
+    for field in ("default_timeslots", "timeslot_duration"):
+        try:
+            duration *= forms.IntegerField(min_value=1).clean(conference[field])
+        except ValidationError as exc:
+            raise ValidationError({field: exc.messages}) from exc
+
+    default_type = event.cfp.default_type
+    default_name = str(default_type.name)
+    name_overrides = {"lecture": default_name, "djset": "DJ Set"}
+    names = list(
+        dict.fromkeys(
+            name_overrides.get(
+                name.lower(),
+                re.sub(r"\b\w", lambda match: match[0].upper(), name.replace("_", " ")),
+            )
+            for name in conference_submission_types(conference)
+        )
+    ) or [default_name]
+    if default_name in names:
+        names.remove(default_name)
+        names.insert(0, default_name)
+    for index, name in enumerate(names):
+        submission_type = default_type if index == 0 else SubmissionType(event=event)
+        try:
+            cleaned_name = forms.CharField(
+                max_length=SubmissionType._meta.get_field("name").max_length
+            ).clean(name)
+            submission_type.name = {event.locale: cleaned_name}
+            submission_type.default_duration = duration
+            submission_type.full_clean()
+        except ValidationError as exc:
+            raise ValidationError(
+                {
+                    "allowed_event_types": _(
+                        "Could not migrate frab session type {name}: {error}"
+                    ).format(name=name, error=" ".join(exc.messages))
+                }
+            ) from exc
+        submission_type.save()
+
+
 def migrate_tracks(event, tracks):
     for position, source in enumerate(tracks):
         try:
@@ -209,7 +262,14 @@ def migrate_cfp(event, source, source_url):
 
 @transaction.atomic
 def migrate_conference(
-    conference, *, organiser, user, source_url="", overrides=None, import_tracks=True
+    conference,
+    *,
+    organiser,
+    user,
+    source_url="",
+    overrides=None,
+    import_tracks=True,
+    import_submission_types=True,
 ):
     """Create the selected event with the native pretalx creation function."""
     missing = missing_event_fields(conference)
@@ -265,4 +325,6 @@ def migrate_conference(
             migrate_cfp(event, conference["cfp"], source_url)
         if import_tracks:
             migrate_tracks(event, conference["tracks"])
+        if import_submission_types:
+            migrate_submission_types(event, conference)
     return event

@@ -189,6 +189,9 @@ def test_server_selected_conference_and_tracks_use_bound_parameters(
             None,
             None,
             None,
+            "lecture;workshop",
+            15,
+            3,
         ),
         None,
     ]
@@ -200,6 +203,9 @@ def test_server_selected_conference_and_tracks_use_bound_parameters(
     assert "feedback_token" not in query
     assert "schedule_public" not in query
     assert row["id"] == 42
+    assert row["allowed_event_types"] == "lecture;workshop"
+    assert row["timeslot_duration"] == 15
+    assert row["default_timeslots"] == 3
     query, parameters = cursor.execute.call_args.args
     assert (
         query
@@ -225,7 +231,23 @@ def test_server_cfp_lookup_uses_bound_parameters(monkeypatch, backend):
     cursor = connection.cursor.return_value
     cursor.fetchall.return_value = [(17, "Example track", "fefd7f")]
     cursor.fetchone.side_effect = [
-        (42, "Title", "CONF", "UTC", None, None, None, None, 0, None, None, None),
+        (
+            42,
+            "Title",
+            "CONF",
+            "UTC",
+            None,
+            None,
+            None,
+            None,
+            0,
+            None,
+            None,
+            None,
+            "lecture",
+            15,
+            3,
+        ),
         ("2020-01-01", "2020-02-01", None, "Welcome", "cfp@example.org"),
     ]
     monkeypatch.setattr(driver, "connect", Mock(return_value=connection))

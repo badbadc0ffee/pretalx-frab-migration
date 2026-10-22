@@ -156,7 +156,8 @@ def migration_database(tmp_path):
                 start_date DATETIME, end_date DATETIME, email TEXT, color TEXT,
                 feedback_enabled BOOLEAN,
                 schedule_html_intro TEXT, parent_id INTEGER,
-                allowed_event_types TEXT, feedback_token TEXT, program_export_base_url TEXT
+                allowed_event_types TEXT, feedback_token TEXT, program_export_base_url TEXT,
+                timeslot_duration INTEGER DEFAULT 15, default_timeslots INTEGER DEFAULT 3
             )
         """)
         connection.execute("""
@@ -176,7 +177,7 @@ def migration_database(tmp_path):
                 '2026-10-21 23:30:00', '2026-10-24 21:00:00',
                 'orga@example.org', '12AbEF', 0,
                 '<h2>Welcome</h2><p>Hello <strong>friends</strong>.</p><p><a href="/info">Details</a></p>',
-                NULL, 'lecture;workshop', 'do-not-import-this-token', NULL
+                NULL, 'lecture;workshop', 'do-not-import-this-token', NULL, 15, 3
             )
         """)
         connection.commit()
