@@ -1,0 +1,6 @@
+recursive-include pretalx_frab_migration/static *
+recursive-include pretalx_frab_migration/templates *
+exclude pretalx_frab_migration/locale/django.pot
+recursive-include pretalx_frab_migration/locale *
+recursive-include pretalx_frab_migration *.py
+include justfile
